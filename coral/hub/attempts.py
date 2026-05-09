@@ -97,7 +97,9 @@ def read_attempts(coral_dir: str | Path) -> list[Attempt]:
     return attempts
 
 
-def get_leaderboard(coral_dir: str | Path, top_n: int = 20, direction: str = "maximize") -> list[Attempt]:
+def get_leaderboard(
+    coral_dir: str | Path, top_n: int = 20, direction: str = "maximize"
+) -> list[Attempt]:
     """Get top N attempts sorted by score. Direction controls sort order."""
     attempts = read_attempts(coral_dir)
     scored = [a for a in attempts if a.score is not None]
@@ -128,9 +130,7 @@ def agent_in_grader_queue(
     if attempts is None:
         attempts = read_attempts(coral_dir)
     candidates = [
-        a
-        for a in attempts
-        if a.agent_id == agent_id and a.status == "pending" and a.score is None
+        a for a in attempts if a.agent_id == agent_id and a.status == "pending" and a.score is None
     ]
     if not candidates:
         return None
@@ -163,6 +163,22 @@ def get_recent(coral_dir: str | Path, n: int = 10) -> list[Attempt]:
     return attempts[:n]
 
 
+def per_agent_class_counts(coral_dir: str | Path) -> dict[str, dict[str, int]]:
+    """Tally finalized attempts per agent, split by budget_class.
+
+    Returns ``{agent_id: {"real": n, "grader_error": n, "tune": n}}``.
+    Pending attempts (not yet graded) are skipped; they don't have a final
+    classification. Used by `coral status` to surface per-agent grader-error rate.
+    """
+    counts: dict[str, dict[str, int]] = {}
+    for a in read_attempts(coral_dir):
+        if a.status == "pending":
+            continue
+        bucket = counts.setdefault(a.agent_id, {})
+        bucket[a.budget_class] = bucket.get(a.budget_class, 0) + 1
+    return counts
+
+
 def search_attempts(coral_dir: str | Path, query: str) -> list[Attempt]:
     """Full-text search over attempt titles, feedback, and status."""
     query_lower = query.lower()
@@ -189,16 +205,18 @@ def format_leaderboard(attempts: list[Attempt]) -> str:
         return "No attempts yet."
 
     lines = [
-        "| Rank | Score            | Agent   | Title                                    | Time        | Commit   |",
-        "|------|------------------|---------|------------------------------------------|-------------|----------|",
+        "| Rank | Score            | Agent   | Class  | Title                                    | Time        | Commit   |",
+        "|------|------------------|---------|--------|------------------------------------------|-------------|----------|",
     ]
     for i, a in enumerate(attempts, 1):
         score_str = f"{a.score:.10f}" if a.score is not None else "—"
         commit_short = a.commit_hash[:8]
         title = a.title[:40].ljust(40) if a.title else "—".ljust(40)
         time_str = _format_time(a.timestamp)
+        # Display "error" instead of full "grader_error" to keep the column narrow.
+        class_str = "error" if a.budget_class == "grader_error" else a.budget_class
         lines.append(
-            f"| {i:<4} | {score_str:>16} | {a.agent_id:<7} | {title} | {time_str:<11} | {commit_short} |"
+            f"| {i:<4} | {score_str:>16} | {a.agent_id:<7} | {class_str:<6} | {title} | {time_str:<11} | {commit_short} |"
         )
 
     return "\n".join(lines)
@@ -235,14 +253,14 @@ def format_status_summary(coral_dir: str | Path, direction: str = "maximize") ->
             f"Best:  {best.score:.10f}  ({best.title[:50]})  @ {_format_time(best.timestamp)}"
         )
     if worst and best and worst.commit_hash != best.commit_hash:
-        lines.append(
-            f"Worst: {worst.score:.10f}  ({worst.title[:50]})"
-        )
+        lines.append(f"Worst: {worst.score:.10f}  ({worst.title[:50]})")
 
     if scored:
         first_time = min(a.timestamp for a in attempts)
         last_time = max(a.timestamp for a in attempts)
-        lines.append(f"First attempt: {_format_time(first_time)}  |  Latest: {_format_time(last_time)}")
+        lines.append(
+            f"First attempt: {_format_time(first_time)}  |  Latest: {_format_time(last_time)}"
+        )
 
     # Per-agent breakdown
     lines.append("")

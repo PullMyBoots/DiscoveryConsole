@@ -7,17 +7,19 @@ from coral.hub.attempts import (
     format_leaderboard,
     get_agent_attempts,
     get_leaderboard,
-    get_recent,
+    per_agent_class_counts,
     read_attempts,
     search_attempts,
     write_attempt,
 )
-from coral.hub.notes import list_notes, read_note, search_notes, get_recent_notes, format_notes_list
-from coral.hub.skills import list_skills, read_skill, get_skill_tree
+from coral.hub.notes import format_notes_list, get_recent_notes, list_notes, read_note, search_notes
+from coral.hub.skills import get_skill_tree, list_skills, read_skill
 from coral.types import Attempt
 
 
-def _make_attempt(commit: str, agent: str = "agent-1", score: float = 0.5, title: str = "test") -> Attempt:
+def _make_attempt(
+    commit: str, agent: str = "agent-1", score: float = 0.5, title: str = "test"
+) -> Attempt:
     return Attempt(
         commit_hash=commit,
         agent_id=agent,
@@ -78,6 +80,65 @@ def test_format_leaderboard():
     md = format_leaderboard(attempts)
     assert "Rank" in md
     assert "0.9000" in md
+
+
+def test_format_leaderboard_shows_class_column():
+    """The Class column distinguishes real / tune / error attempts at a glance."""
+    real = _make_attempt("aaa", score=0.9, title="real-row")
+    tune = _make_attempt("bbb", score=0.5, title="tune-row")
+    tune.metadata["budget_class"] = "tune"
+    err = _make_attempt("ccc", score=0.3, title="error-row")
+    err.metadata["budget_class"] = "grader_error"
+
+    md = format_leaderboard([real, tune, err])
+    assert "Class" in md
+    # Per-row class labels appear in the table body.
+    real_line = next(line for line in md.splitlines() if "real-row" in line)
+    tune_line = next(line for line in md.splitlines() if "tune-row" in line)
+    err_line = next(line for line in md.splitlines() if "error-row" in line)
+    assert " real " in real_line
+    assert " tune " in tune_line
+    # grader_error is rendered as compact "error" to keep the column narrow.
+    assert " error " in err_line
+    assert "grader_error" not in err_line
+
+
+def test_per_agent_class_counts_splits_by_budget_class():
+    """Budget class counts are tallied per agent (issue #73)."""
+    with tempfile.TemporaryDirectory() as d:
+        # agent-1: 2 real, 1 grader_error, 1 tune
+        a = _make_attempt("aaa", agent="agent-1")
+        b = _make_attempt("bbb", agent="agent-1")
+        c = _make_attempt("ccc", agent="agent-1")
+        c.metadata["budget_class"] = "grader_error"
+        c.status = "timeout"
+        d_att = _make_attempt("ddd", agent="agent-1")
+        d_att.metadata["budget_class"] = "tune"
+
+        # agent-2: 1 real
+        e = _make_attempt("eee", agent="agent-2")
+
+        for att in (a, b, c, d_att, e):
+            write_attempt(d, att)
+
+        counts = per_agent_class_counts(d)
+        assert counts["agent-1"] == {"real": 2, "grader_error": 1, "tune": 1}
+        assert counts["agent-2"] == {"real": 1}
+
+
+def test_per_agent_class_counts_skips_pending():
+    """Pending attempts have no final classification — exclude from tallies."""
+    with tempfile.TemporaryDirectory() as d:
+        scored = _make_attempt("aaa", agent="agent-1")
+        pending = _make_attempt("bbb", agent="agent-1")
+        pending.status = "pending"
+        pending.score = None
+
+        write_attempt(d, scored)
+        write_attempt(d, pending)
+
+        counts = per_agent_class_counts(d)
+        assert counts["agent-1"] == {"real": 1}
 
 
 def test_notes():

@@ -1,6 +1,15 @@
 """Tests for core types."""
 
-from coral.types import Attempt, Score, ScoreBundle, Task
+from coral.types import (
+    BUDGET_CLASS_GRADER_ERROR,
+    BUDGET_CLASS_REAL,
+    BUDGET_CLASS_TUNE,
+    Attempt,
+    Score,
+    ScoreBundle,
+    Task,
+    get_budget_class,
+)
 
 
 def test_task_roundtrip():
@@ -12,19 +21,13 @@ def test_task_roundtrip():
     assert restored.metadata == {"key": "val"}
 
 
-def test_score_to_float():
-    assert Score(value=True, name="s").to_float() == 1.0
-    assert Score(value=False, name="s").to_float() == 0.0
-    assert Score(value=0.75, name="s").to_float() == 0.75
-    assert Score(value="CORRECT", name="s").to_float() == 1.0
-    assert Score(value="PARTIAL", name="s").to_float() == 0.5
-
-
 def test_score_bundle_aggregation():
-    bundle = ScoreBundle(scores={
-        "a": Score(value=0.8, name="a"),
-        "b": Score(value=0.6, name="b"),
-    })
+    bundle = ScoreBundle(
+        scores={
+            "a": Score(value=0.8, name="a"),
+            "b": Score(value=0.6, name="b"),
+        }
+    )
     agg = bundle.compute_aggregated()
     assert abs(agg - 0.7) < 1e-6
 
@@ -86,3 +89,61 @@ def test_attempt_from_dict_without_shared_state_hash():
     attempt = Attempt.from_dict(data)
     assert attempt.shared_state_hash is None
     assert attempt.parent_shared_state_hash is None
+
+
+# --------------------------------------------------------------------------- #
+# Budget class (issue #73)                                                    #
+# --------------------------------------------------------------------------- #
+
+
+def test_get_budget_class_default_real():
+    """Empty / missing metadata defaults to 'real' for backward compat."""
+    assert get_budget_class(None) == BUDGET_CLASS_REAL
+    assert get_budget_class({}) == BUDGET_CLASS_REAL
+    assert get_budget_class({"other_key": "x"}) == BUDGET_CLASS_REAL
+
+
+def test_get_budget_class_recognizes_known_values():
+    assert get_budget_class({"budget_class": "real"}) == BUDGET_CLASS_REAL
+    assert get_budget_class({"budget_class": "grader_error"}) == BUDGET_CLASS_GRADER_ERROR
+    assert get_budget_class({"budget_class": "tune"}) == BUDGET_CLASS_TUNE
+
+
+def test_get_budget_class_rejects_unknown():
+    """Unknown values fall back to 'real' rather than corrupting accounting."""
+    assert get_budget_class({"budget_class": "garbage"}) == BUDGET_CLASS_REAL
+
+
+def test_attempt_budget_class_property():
+    """Attempt.budget_class reads from metadata with default 'real'."""
+    a = Attempt(
+        commit_hash="abc",
+        agent_id="a-1",
+        title="t",
+        score=0.5,
+        status="improved",
+        parent_hash=None,
+        timestamp="2026-03-11T10:00:00Z",
+    )
+    assert a.budget_class == BUDGET_CLASS_REAL
+
+    a.metadata["budget_class"] = "tune"
+    assert a.budget_class == BUDGET_CLASS_TUNE
+
+    a.metadata["budget_class"] = "grader_error"
+    assert a.budget_class == BUDGET_CLASS_GRADER_ERROR
+
+
+def test_attempt_legacy_json_loads_as_real():
+    """Pre-issue-73 JSON without budget_class metadata reads as 'real'."""
+    data = {
+        "commit_hash": "abc",
+        "agent_id": "a-1",
+        "title": "old",
+        "score": 0.5,
+        "status": "improved",
+        "parent_hash": None,
+        "timestamp": "2026-03-11T10:00:00Z",
+    }
+    a = Attempt.from_dict(data)
+    assert a.budget_class == BUDGET_CLASS_REAL

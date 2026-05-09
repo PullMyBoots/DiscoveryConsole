@@ -104,6 +104,39 @@ def test_generate_coral_md_single_agent():
     assert "Record Knowledge" in md
 
 
+def test_generate_coral_md_tune_guardrails_present():
+    """The when-to / when-not-to guardrails are explicit in both templates."""
+    config = CoralConfig(
+        task=TaskConfig(name="t", description="d"),
+        grader=GraderConfig(),
+        agents=AgentConfig(count=2),
+    )
+    md_multi = generate_coral_md(config, "agent-1")
+    md_single = generate_coral_md(config, "agent-1", single_agent=True)
+    for md in (md_multi, md_single):
+        assert "Use `--tune` for" in md or "Use `--tune` for:" in md
+        assert "Do NOT use `--tune` for" in md
+        assert "final" in md.lower()
+        # Plateau-dodge guardrail.
+        assert "plateau" in md.lower()
+        # Per-grader description now ships in feedback, not in CORAL.md.
+        # The template should advertise that contract so the agent knows
+        # to look for the [--tune mode] line in their next eval result.
+        assert "[--tune mode]" in md
+
+
+def test_generate_coral_md_does_not_describe_tune_per_grader():
+    """Per-grader tune description is now delivered via feedback, not CORAL.md."""
+    config = CoralConfig(
+        task=TaskConfig(name="t", description="d"),
+        grader=GraderConfig(),
+    )
+    md = generate_coral_md(config, "agent-1")
+    # Old placeholder must be gone.
+    assert "{tune_description}" not in md
+    assert "What this grader does in tune mode" not in md
+
+
 def test_generate_coral_md_score_direction_from_config():
     """Score direction now comes solely from grader.direction (no type table)."""
     for direction, expected in [

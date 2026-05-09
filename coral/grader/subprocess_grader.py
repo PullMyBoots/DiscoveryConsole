@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from coral.config import GraderConfig
-from coral.types import ScoreBundle, Task
+from coral.types import Score, ScoreBundle, Task
 
 logger = logging.getLogger(__name__)
 
@@ -155,8 +155,6 @@ class SubprocessGrader:
                 timeout=self.timeout,
             )
         except subprocess.TimeoutExpired:
-            from coral.types import Score
-
             timeout = self.timeout
             return ScoreBundle(
                 scores={

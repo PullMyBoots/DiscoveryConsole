@@ -231,7 +231,9 @@ Run 'coral <command> --help' for details on any command."""
             "  coral log -n 5                Top 5\n"
             "  coral log --recent            Sort by time instead of score\n"
             "  coral log --agent agent-1     Filter by agent\n"
-            "  coral log --search 'kernel'   Full-text search"
+            "  coral log --search 'kernel'   Full-text search\n"
+            "  coral log --all               Include tune + grader_error attempts\n"
+            "  coral log --class tune        Show only tune-mode attempts"
         ),
         formatter_class=_CommandHelpFormatter,
     )
@@ -241,6 +243,18 @@ Run 'coral <command> --help' for details on any command."""
     p_log.add_argument("--recent", action="store_true", help="Sort by time instead of score")
     p_log.add_argument("--agent", help="Filter by agent ID")
     p_log.add_argument("--search", help="Full-text search")
+    g_class = p_log.add_mutually_exclusive_group()
+    g_class.add_argument(
+        "--all",
+        action="store_true",
+        help="Include tune-mode and grader-error attempts (hidden by default)",
+    )
+    g_class.add_argument(
+        "--class",
+        dest="budget_class",
+        choices=("real", "tune", "grader_error"),
+        help="Show only attempts of this budget class (mutually exclusive with --all)",
+    )
     _add_run_args(p_log)
     # Hidden alias: attempts -> log
     p_attempts_alias = sub.add_parser("attempts", help=argparse.SUPPRESS)
@@ -265,7 +279,9 @@ Run 'coral <command> --help' for details on any command."""
     # Hidden alias: attempt -> show
     p_attempt_alias = sub.add_parser("attempt", help=argparse.SUPPRESS)
     p_attempt_alias.add_argument("hash", help=argparse.SUPPRESS)
-    p_attempt_alias.add_argument("--diff", action="store_true", default=False, help=argparse.SUPPRESS)
+    p_attempt_alias.add_argument(
+        "--diff", action="store_true", default=False, help=argparse.SUPPRESS
+    )
     _add_run_args(p_attempt_alias)
 
     p_notes = sub.add_parser(
@@ -284,7 +300,9 @@ Run 'coral <command> --help' for details on any command."""
     p_notes.add_argument("--search", "-s", help="Search notes by keyword")
     p_notes.add_argument("-n", "--recent", type=int, help="Show N most recent")
     p_notes.add_argument("--read", "-r", help="Read a specific note by number or name")
-    p_notes.add_argument("--history", action="store_true", help="Show shared state checkpoint history")
+    p_notes.add_argument(
+        "--history", action="store_true", help="Show shared state checkpoint history"
+    )
     p_notes.add_argument("--diff", metavar="HASH", help="Show diff for a checkpoint commit")
     _add_run_args(p_notes)
 
@@ -344,10 +362,11 @@ Run 'coral <command> --help' for details on any command."""
             "poll later via `coral wait <hash>`."
         ),
         epilog=(
-            'Examples:\n'
+            "Examples:\n"
             '  coral eval -m "Optimized inner loop"\n'
             '  coral eval -m "Try variant A" --no-wait\n'
-            '  coral eval -m "Heavy benchmark" --timeout 1800'
+            '  coral eval -m "Heavy benchmark" --timeout 1800\n'
+            '  coral eval --tune -m "Sweep lr=1e-3 vs 3e-4"'
         ),
         formatter_class=_CommandHelpFormatter,
     )
@@ -367,6 +386,17 @@ Run 'coral <command> --help' for details on any command."""
         type=float,
         default=None,
         help="Seconds to wait for grader (default: derived from grader.timeout).",
+    )
+    p_eval.add_argument(
+        "--tune",
+        action="store_true",
+        default=False,
+        help=(
+            "Submit as a tune-mode attempt: scored and recorded normally, but "
+            "excluded from the agent's plateau / heartbeat budget. Use for "
+            "hyperparameter sweeps and config exploration that shouldn't "
+            "trigger pivot prompts."
+        ),
     )
 
     p_wait = sub.add_parser(
@@ -434,7 +464,12 @@ Run 'coral <command> --help' for details on any command."""
 
     hb_set = hb_sub.add_parser("set", help="Add or update a heartbeat action")
     hb_set.add_argument("name", help="Action name (e.g. reflect, consolidate)")
-    hb_set.add_argument("--every", type=int, required=True, help="Trigger every N evals (or stall threshold for plateau)")
+    hb_set.add_argument(
+        "--every",
+        type=int,
+        required=True,
+        help="Trigger every N evals (or stall threshold for plateau)",
+    )
     hb_set.add_argument("--prompt", help="Prompt text (required for custom actions)")
     hb_set.add_argument(
         "--trigger",

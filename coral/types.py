@@ -38,29 +38,19 @@ class Task:
 
 @dataclass
 class Score:
-    """Single evaluation score."""
+    """Single evaluation score.
 
-    value: float | str | bool | None
+    `value` is a number (or None when the grader couldn't produce a result —
+    e.g. a timeout). Pass/fail and verdict-style outputs must be converted to
+    a float by the grader before constructing the Score; the framework does
+    not infer a number from a string label, since the mapping it would have
+    to use ("PASS"? "CORRECT"? "1"?) is task-specific.
+    """
+
+    value: float | int | None
     name: str
     explanation: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-
-    def to_float(self) -> float | None:
-        if self.value is None:
-            return None
-        if isinstance(self.value, bool):
-            return 1.0 if self.value else 0.0
-        elif isinstance(self.value, int | float):
-            return float(self.value)
-        elif isinstance(self.value, str):
-            mapping = {
-                "CORRECT": 1.0, "C": 1.0,
-                "INCORRECT": 0.0, "I": 0.0,
-                "PARTIAL": 0.5, "P": 0.5,
-                "NOANSWER": 0.0, "N": 0.0,
-            }
-            return mapping.get(self.value.upper(), 0.0)
-        return 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -95,22 +85,20 @@ class ScoreBundle:
 
     def get_score_value(self, name: str, default: float = 0.0) -> float:
         score = self.scores.get(name)
-        if score is None:
+        if score is None or score.value is None:
             return default
-        return score.to_float()
+        return float(score.value)
 
     def compute_aggregated(self, weights: dict[str, float] | None = None) -> float:
         weights = weights or {}
         total = 0.0
         weight_sum = 0.0
         for name, score in self.scores.items():
-            try:
-                value = score.to_float()
-                weight = weights.get(name, 1.0)
-                total += value * weight
-                weight_sum += weight
-            except (ValueError, TypeError):
+            if score.value is None:
                 continue
+            weight = weights.get(name, 1.0)
+            total += float(score.value) * weight
+            weight_sum += weight
         return total / weight_sum if weight_sum > 0 else 0.0
 
     def to_dict(self) -> dict[str, Any]:
@@ -137,6 +125,30 @@ class ScoreBundle:
         )
 
 
+# Budget classification for an attempt. Stored on `Attempt.metadata["budget_class"]`.
+#
+# - "real":         a genuine optimization attempt — counts toward plateau / heartbeat triggers.
+# - "grader_error": grader timeout or grader-side exception — the eval machinery itself broke,
+#                   not a real fail of the agent's code.
+# - "tune":         agent-submitted in tune mode — config/hyperparam exploration.
+#
+# Attempts without this metadata key are treated as "real" (backward compat).
+BUDGET_CLASS_REAL = "real"
+BUDGET_CLASS_GRADER_ERROR = "grader_error"
+BUDGET_CLASS_TUNE = "tune"
+_VALID_BUDGET_CLASSES = (BUDGET_CLASS_REAL, BUDGET_CLASS_GRADER_ERROR, BUDGET_CLASS_TUNE)
+
+
+def get_budget_class(metadata: dict[str, Any] | None) -> str:
+    """Read the budget class from attempt metadata, defaulting to 'real'."""
+    if not metadata:
+        return BUDGET_CLASS_REAL
+    cls = metadata.get("budget_class")
+    if cls in _VALID_BUDGET_CLASSES:
+        return cls
+    return BUDGET_CLASS_REAL
+
+
 @dataclass
 class Attempt:
     """Record of a single optimization attempt by an agent."""
@@ -152,6 +164,11 @@ class Attempt:
     shared_state_hash: str | None = None
     parent_shared_state_hash: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def budget_class(self) -> str:
+        """Budget classification: 'real', 'grader_error', or 'tune'. Defaults to 'real'."""
+        return get_budget_class(self.metadata)
 
     def to_dict(self) -> dict[str, Any]:
         d = {

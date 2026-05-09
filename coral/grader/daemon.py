@@ -39,11 +39,30 @@ from coral.hub.attempts import (
     read_attempts,
     write_attempt,
 )
-from coral.types import Attempt, Task
+from coral.types import (
+    BUDGET_CLASS_GRADER_ERROR,
+    Attempt,
+    Task,
+    get_budget_class,
+)
 
 logger = logging.getLogger(__name__)
 
 _POLL_INTERVAL_SEC = 0.5
+
+# Headroom on top of `grader.timeout` before the daemon SIGKILLs the worker.
+# Inner timers (asyncio.wait_for in TaskGrader, subprocess.run(timeout=...) in
+# per-grader code) all use the user-configured `grader.timeout`. Without
+# headroom they race the daemon's outer hard-kill — a kernel that just barely
+# overruns can land as either status="failure"/budget_class="real" (inner
+# timer wins, returns a clean self.fail bundle) or status="timeout"/
+# budget_class="grader_error" (outer wins). Same wall-clock condition, two
+# different leaderboard accountings.
+#
+# Giving the outer timer a grace window means the inner timer is the
+# *intended* one to fire; the daemon hard-kill is the safety net for graders
+# that hang past it (e.g. C extensions or sleeps that ignore cancellation).
+_TIMEOUT_GRACE_SECONDS = 30
 
 # Guards `increment_eval_count` (read-modify-write on .coral/public/eval_count).
 # The daemon is the sole writer; this lock is only needed because pending
@@ -54,6 +73,7 @@ _eval_count_lock = threading.Lock()
 # --------------------------------------------------------------------------- #
 # Subprocess wrapper around the grader (keeps hard-kill semantics on timeout) #
 # --------------------------------------------------------------------------- #
+
 
 def _grader_worker(
     config_path: str,
@@ -89,6 +109,14 @@ def _run_grader_with_timeout(
     synchronous blocking code (numpy, Docker calls, etc.) on timeout.
     asyncio.wait_for can't.
 
+    The hard-kill fires at ``timeout + _TIMEOUT_GRACE_SECONDS``, not at
+    ``timeout`` exactly. The user-configured ``timeout`` is also threaded
+    through inner timers (TaskGrader.grade's asyncio.wait_for, per-grader
+    subprocess.run(timeout=...)). Without headroom the outer hard-kill races
+    them — see the comment on _TIMEOUT_GRACE_SECONDS for why. Inner timers
+    should fire first and return a clean self.fail bundle; the daemon kill
+    is the safety net.
+
     For entrypoint-based graders we skip the multiprocessing wrapper —
     SubprocessGrader already shells out to its own venv and applies the
     same timeout via subprocess.run, so doubling up would just add a
@@ -103,6 +131,7 @@ def _run_grader_with_timeout(
         grader = load_grader(config, coral_dir=coral_dir)
         return asyncio.run(grader.grade(codebase_path, tasks))
 
+    hard_kill_deadline = timeout + _TIMEOUT_GRACE_SECONDS
     result_queue: multiprocessing.Queue = multiprocessing.Queue()
     proc = multiprocessing.Process(
         target=_grader_worker,
@@ -110,12 +139,14 @@ def _run_grader_with_timeout(
     )
     try:
         proc.start()
-        proc.join(timeout=timeout)
+        proc.join(timeout=hard_kill_deadline)
 
         if proc.is_alive():
             proc.kill()
             proc.join(timeout=5)
-            raise TimeoutError(f"Grader timed out after {timeout}s")
+            raise TimeoutError(
+                f"Grader exceeded {timeout}s + {_TIMEOUT_GRACE_SECONDS}s grace and was killed"
+            )
 
         if result_queue.empty():
             raise RuntimeError("Grader process exited without returning a result")
@@ -135,6 +166,7 @@ def _run_grader_with_timeout(
 # Isolated worktree management                                                #
 # --------------------------------------------------------------------------- #
 
+
 def _grader_checkouts_dir(coral_dir: Path) -> Path:
     d = coral_dir / "private" / "grader_checkouts"
     d.mkdir(parents=True, exist_ok=True)
@@ -152,8 +184,7 @@ def _repo_dir(coral_dir: Path) -> Path:
     if _is_git_repo(coral_dir.parent):
         return coral_dir.parent
     raise RuntimeError(
-        f"Cannot locate source repo from {coral_dir} "
-        f"(tried {candidate} and {coral_dir.parent})"
+        f"Cannot locate source repo from {coral_dir} (tried {candidate} and {coral_dir.parent})"
     )
 
 
@@ -172,7 +203,9 @@ def _add_isolated_worktree(repo_dir: Path, commit_hash: str, dest: Path) -> None
 
     result = subprocess.run(
         ["git", "worktree", "add", "--detach", str(dest), commit_hash],
-        capture_output=True, text=True, cwd=str(repo_dir),
+        capture_output=True,
+        text=True,
+        cwd=str(repo_dir),
     )
     if result.returncode != 0:
         raise RuntimeError(
@@ -185,12 +218,16 @@ def _remove_worktree(repo_dir: Path, dest: Path) -> None:
     # git worktree remove is the preferred path; fall back to rmtree + prune.
     result = subprocess.run(
         ["git", "worktree", "remove", "--force", str(dest)],
-        capture_output=True, text=True, cwd=str(repo_dir),
+        capture_output=True,
+        text=True,
+        cwd=str(repo_dir),
     )
     if result.returncode != 0:
         logger.warning(
             "git worktree remove %s failed (rc=%d): %s — falling back to rmtree",
-            dest, result.returncode, result.stderr.strip(),
+            dest,
+            result.returncode,
+            result.stderr.strip(),
         )
         try:
             if dest.exists():
@@ -199,13 +236,16 @@ def _remove_worktree(repo_dir: Path, dest: Path) -> None:
             logger.warning("rmtree %s failed: %s", dest, e)
         subprocess.run(
             ["git", "worktree", "prune"],
-            capture_output=True, text=True, cwd=str(repo_dir),
+            capture_output=True,
+            text=True,
+            cwd=str(repo_dir),
         )
 
 
 # --------------------------------------------------------------------------- #
 # Per-attempt grading                                                         #
 # --------------------------------------------------------------------------- #
+
 
 def _compute_status(
     score: float | None,
@@ -220,8 +260,7 @@ def _compute_status(
 
     prev_attempts = get_agent_attempts(str(coral_dir), agent_id)
     prev_scores = [
-        a.score for a in prev_attempts
-        if a.score is not None and a.commit_hash != commit_hash
+        a.score for a in prev_attempts if a.score is not None and a.commit_hash != commit_hash
     ]
     if not prev_scores:
         return "improved"
@@ -254,11 +293,20 @@ def _grade_one(
     config: CoralConfig,
 ) -> Attempt:
     """Grade a single pending attempt and return the finalized Attempt record."""
+    # Task.metadata is the canonical channel for surfacing per-attempt context
+    # to the user's grader (read via TaskGrader.tune / .budget_class). Both
+    # the in-process and SubprocessGrader paths serialize it, so this works
+    # for either runtime. Final budget_class may flip to "grader_error" below.
+    budget_class = get_budget_class(attempt.metadata)
     task = Task(
         id=config.task.name,
         name=config.task.name,
         description=config.task.description,
-        metadata={},
+        metadata={
+            "budget_class": budget_class,
+            "agent_id": attempt.agent_id,
+            "commit_hash": attempt.commit_hash,
+        },
     )
     timeout = config.grader.timeout
     minimize = config.grader.direction == "minimize"
@@ -274,13 +322,21 @@ def _grade_one(
         _add_isolated_worktree(repo_dir, attempt.commit_hash, checkout_path)
         try:
             bundle = _run_grader_with_timeout(
-                str(config_path), str(coral_dir), str(checkout_path), [task], timeout,
+                str(config_path),
+                str(coral_dir),
+                str(checkout_path),
+                [task],
+                timeout,
             )
             score = bundle.aggregated
             feedback = _build_feedback(bundle)
             metadata = dict(getattr(bundle, "metadata", None) or {})
             status = _compute_status(
-                score, attempt.agent_id, attempt.commit_hash, coral_dir, minimize,
+                score,
+                attempt.agent_id,
+                attempt.commit_hash,
+                coral_dir,
+                minimize,
             )
         finally:
             _remove_worktree(repo_dir, checkout_path)
@@ -288,10 +344,18 @@ def _grade_one(
         logger.error("Grader timed out on %s after %ss", attempt.commit_hash[:12], timeout)
         status = "timeout"
         feedback = f"Eval timed out after {timeout}s."
+        budget_class = BUDGET_CLASS_GRADER_ERROR
     except Exception as e:
         logger.exception("Grader crashed on %s", attempt.commit_hash[:12])
         status = "crashed"
         feedback = str(e)
+        budget_class = BUDGET_CLASS_GRADER_ERROR
+
+    # Carry forward any pending metadata the grader bundle didn't overwrite,
+    # then stamp the final budget_class (always wins over any pending value).
+    for k, v in (attempt.metadata or {}).items():
+        metadata.setdefault(k, v)
+    metadata["budget_class"] = budget_class
 
     finalized = Attempt(
         commit_hash=attempt.commit_hash,
@@ -312,7 +376,8 @@ def _grade_one(
         count = increment_eval_count(coral_dir)
     logger.info(
         "Graded #%d %s -> score=%s status=%s",
-        count, attempt.commit_hash[:12],
+        count,
+        attempt.commit_hash[:12],
         f"{score:.6f}" if score is not None else "None",
         status,
     )
@@ -322,6 +387,7 @@ def _grade_one(
 # --------------------------------------------------------------------------- #
 # Main loop                                                                   #
 # --------------------------------------------------------------------------- #
+
 
 def _find_pending(coral_dir: Path) -> list[Attempt]:
     """Return pending attempts in submission order (oldest first)."""
@@ -348,9 +414,7 @@ def _safe_grade_one(
     try:
         return _grade_one(attempt, config_path, coral_dir, config)
     except Exception:
-        logger.exception(
-            "Unhandled error grading %s; marking crashed", attempt.commit_hash[:12]
-        )
+        logger.exception("Unhandled error grading %s; marking crashed", attempt.commit_hash[:12])
         try:
             crashed = Attempt(
                 commit_hash=attempt.commit_hash,
@@ -462,7 +526,8 @@ def run_daemon(coral_dir: str | Path, stop_event: Any = None) -> None:
 
     logger.info(
         "Grader daemon started (coral_dir=%s, max_workers=%d)",
-        coral_dir, max_workers,
+        coral_dir,
+        max_workers,
     )
     started_at = datetime.now(UTC).isoformat()
     heartbeat_file = coral_dir / "public" / "grader_daemon_heartbeat"

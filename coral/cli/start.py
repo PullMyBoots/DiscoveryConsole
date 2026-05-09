@@ -162,11 +162,17 @@ def _build_docker_cmd(
 ) -> list[str]:
     """Build the `docker run` command with standard mounts and env vars."""
     cmd: list[str] = [
-        *docker_cmd(), "run", "-d",
-        "--name", container_name,
-        "-v", f"{config_dir}:/task:ro",
-        "-v", f"{host_run_dir}:/app/run:rw",
-        "-v", f"{repo_path}:/repo:rw",
+        *docker_cmd(),
+        "run",
+        "-d",
+        "--name",
+        container_name,
+        "-v",
+        f"{config_dir}:/task:ro",
+        "-v",
+        f"{host_run_dir}:/app/run:rw",
+        "-v",
+        f"{repo_path}:/repo:rw",
     ]
 
     # Mount runtime-specific credentials
@@ -256,10 +262,16 @@ def _start_in_docker(args: argparse.Namespace, config: CoralConfig) -> None:
         config=config,
         image=image,
     )
-    docker_cmd.extend([
-        "start", "--config", f"/task/{config_path.name}",
-        "workspace.run_dir=/app/run", "workspace.repo_path=/repo", "run.session=local",
-    ])
+    docker_cmd.extend(
+        [
+            "start",
+            "--config",
+            f"/task/{config_path.name}",
+            "workspace.run_dir=/app/run",
+            "workspace.repo_path=/repo",
+            "run.session=local",
+        ]
+    )
     docker_cmd.extend(getattr(args, "overrides", []))
 
     _run_docker_container(docker_cmd, container_name)
@@ -458,11 +470,13 @@ def _resume_in_docker(args: argparse.Namespace, config: CoralConfig, coral_dir: 
     config_dir_file = host_run_dir / ".coral_host_config_dir"
     repo_path_file = host_run_dir / ".coral_host_repo_path"
     config_dir = (
-        Path(config_dir_file.read_text().strip()) if config_dir_file.exists()
+        Path(config_dir_file.read_text().strip())
+        if config_dir_file.exists()
         else Path(config.task_dir or Path.cwd()).resolve()
     )
     repo_path = (
-        Path(repo_path_file.read_text().strip()) if repo_path_file.exists()
+        Path(repo_path_file.read_text().strip())
+        if repo_path_file.exists()
         else Path(config.workspace.repo_path).resolve()
     )
 
@@ -474,10 +488,14 @@ def _resume_in_docker(args: argparse.Namespace, config: CoralConfig, coral_dir: 
         config=config,
         image=image,
     )
-    docker_cmd.extend([
-        "resume",
-        "workspace.run_dir=/app/run", "workspace.repo_path=/repo", "run.session=local",
-    ])
+    docker_cmd.extend(
+        [
+            "resume",
+            "workspace.run_dir=/app/run",
+            "workspace.repo_path=/repo",
+            "run.session=local",
+        ]
+    )
     instruction = getattr(args, "instruction", None)
     if instruction:
         docker_cmd.extend(["--instruction", instruction])
@@ -709,7 +727,9 @@ def cmd_status(args: argparse.Namespace) -> None:
         format_leaderboard,
         format_status_summary,
         get_leaderboard,
+        per_agent_class_counts,
     )
+    from coral.types import BUDGET_CLASS_GRADER_ERROR, BUDGET_CLASS_REAL, BUDGET_CLASS_TUNE
 
     task = getattr(args, "task", None)
     run = getattr(args, "run", None)
@@ -768,6 +788,7 @@ def cmd_status(args: argparse.Namespace) -> None:
             # Missing or corrupt agent_state.json falls back to log inference.
             agent_state_doc = read_agent_state(coral_dir)
             agent_states = agent_state_doc.agents
+            class_counts = per_agent_class_counts(coral_dir)
 
             print(f"\nAgents: {len(agent_logs)}")
             for agent_name, logs in sorted(agent_logs.items()):
@@ -801,6 +822,19 @@ def cmd_status(args: argparse.Namespace) -> None:
                     f"latest log: {log_size:,} bytes  |  "
                     f"last activity: {mtime.strftime('%H:%M:%S')}{extras_str}"
                 )
+                buckets = class_counts.get(agent_name, {})
+                if buckets:
+                    real = buckets.get(BUDGET_CLASS_REAL, 0)
+                    grader_error = buckets.get(BUDGET_CLASS_GRADER_ERROR, 0)
+                    tune = buckets.get(BUDGET_CLASS_TUNE, 0)
+                    total = real + grader_error + tune
+                    if total:
+                        rate_str = f"{grader_error}/{total} ({100 * grader_error / total:.0f}%)"
+                        print(
+                            f"    attempts: real={real}  "
+                            f"grader_error={grader_error}  tune={tune}  "
+                            f"|  grader-error rate: {rate_str}"
+                        )
 
     direction = read_direction(coral_dir)
     print()

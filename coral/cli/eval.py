@@ -21,6 +21,7 @@ def cmd_eval(args: argparse.Namespace) -> None:
     agent_id = args.agent or read_agent_id()
     wait = getattr(args, "wait", True)
     timeout = getattr(args, "timeout", None)
+    tune = getattr(args, "tune", False)
 
     try:
         attempt = submit_eval(
@@ -29,6 +30,7 @@ def cmd_eval(args: argparse.Namespace) -> None:
             workdir=args.workdir or ".",
             wait=wait,
             poll_timeout=timeout,
+            tune=tune,
         )
     except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -65,7 +67,8 @@ def cmd_wait(args: argparse.Namespace) -> None:
     if coral_dir is None:
         try:
             coral_dir = find_coral_dir(
-                getattr(args, "task", None), getattr(args, "run", None),
+                getattr(args, "task", None),
+                getattr(args, "run", None),
             )
         except Exception as e:
             print(f"Error: Could not locate .coral directory: {e}", file=sys.stderr)
@@ -126,9 +129,7 @@ def cmd_wait(args: argparse.Namespace) -> None:
 
 def _print_attempt_result(attempt, header: str) -> None:
     """Shared formatter for `coral eval` and `coral wait` output."""
-    score_str = (
-        f"{attempt.score:.10f}" if attempt.score is not None else "FAILED"
-    )
+    score_str = f"{attempt.score:.10f}" if attempt.score is not None else "FAILED"
     if attempt.status == "pending":
         score_str = "PENDING"
     eval_count = getattr(attempt, "_eval_count", None)
@@ -136,7 +137,13 @@ def _print_attempt_result(attempt, header: str) -> None:
     print(f"\n{'=' * 50}")
     print(f"{header}{count_str}: {score_str}")
     print(f"Commit:  {attempt.commit_hash[:12]}")
-    print(f"Status:  {attempt.status}")
+    from coral.types import BUDGET_CLASS_REAL
+
+    status_line = attempt.status
+    budget_class = attempt.budget_class
+    if budget_class != BUDGET_CLASS_REAL:
+        status_line = f"{status_line}  (budget: {budget_class})"
+    print(f"Status:  {status_line}")
     if attempt.feedback:
         print(f"Feedback: {attempt.feedback}")
     if attempt.status == "pending":

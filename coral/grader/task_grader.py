@@ -15,28 +15,41 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import json
+import shutil
 import subprocess
+import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
 from coral.config import GraderConfig
-from coral.types import Score, ScoreBundle, Task
+from coral.types import BUDGET_CLASS_TUNE, Score, ScoreBundle, Task, get_budget_class
+
+DEFAULT_TUNE_DESCRIPTION = (
+    "This grader does not differentiate tune mode from a real "
+    "submission: scoring runs the full evaluation either way and "
+    "returns the same score it would return without `--tune`. "
+    "The flag's only effect is budget classification — tune "
+    "attempts do not count against the plateau / heartbeat budget."
+)
 
 
 class TaskGrader(ABC):
     """Base class for task graders.
 
     Subclasses implement evaluate() and return a float or ScoreBundle.
-    The framework sets codebase_path, private_dir, config, and args before calling.
+    The framework sets codebase_path, private_dir, config, args, and tasks
+    before calling.
     """
 
     codebase_path: str
     private_dir: str
     config: GraderConfig
+    tasks: list[Task]
 
     def __init__(self, config: GraderConfig) -> None:
         self.config = config
+        self.tasks = []
 
     @property
     def args(self) -> dict[str, Any]:
@@ -47,6 +60,35 @@ class TaskGrader(ABC):
     def timeout(self) -> int | None:
         """Eval timeout in seconds, from grader config. None means no limit."""
         return self.config.timeout or None
+
+    @property
+    def budget_class(self) -> str:
+        """The pending attempt's budget class.
+
+        Only "real" or "tune" from inside the grader — "grader_error" is
+        stamped by the daemon *after* grading (timeout / exception).
+        """
+        return get_budget_class(self.tasks[0].metadata if self.tasks else None)
+
+    @property
+    def tune(self) -> bool:
+        """True if this attempt was submitted with `coral eval --tune`.
+
+        Use this to switch your grader to a cheaper local target — a smaller
+        eval slice, dev split, or smoke harness — when the agent is sweeping
+        hyperparameters rather than making a real submission. Tune-mode
+        attempts don't count against the plateau / heartbeat budget.
+        """
+        return self.budget_class == BUDGET_CLASS_TUNE
+
+    def describe_tune(self) -> str:
+        """Override to describe what `--tune` does on this grader.
+
+        Prepended to the eval feedback whenever ``self.tune`` is true, so
+        the agent learns whether tune mode uses a cheaper target or is
+        identical to a real eval.
+        """
+        return DEFAULT_TUNE_DESCRIPTION
 
     @property
     def eval_logs_dir(self) -> Path:
@@ -64,11 +106,7 @@ class TaskGrader(ABC):
         Symlinked into each agent worktree at `<worktree>/.claude/eval_logs/`
         by setup_shared_state.
         """
-        d = (
-            Path(self.private_dir).parent
-            / "public" / "eval_logs"
-            / Path(self.codebase_path).name
-        )
+        d = Path(self.private_dir).parent / "public" / "eval_logs" / Path(self.codebase_path).name
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -103,9 +141,6 @@ class TaskGrader(ABC):
         that task-specific dependencies (numpy, scipy, …) are available.
         Falls back to the current interpreter otherwise.
         """
-        import shutil
-        import sys
-
         if (Path(self.codebase_path) / "pyproject.toml").exists() and shutil.which("uv"):
             return ["uv", "run", "--project", self.codebase_path, "python"]
         return [sys.executable]
@@ -160,9 +195,7 @@ class TaskGrader(ABC):
         stdout = result.stdout.strip()
         if not stdout:
             stderr_tail = result.stderr.strip()[-1000:]
-            raise RuntimeError(
-                f"Script produced no output on stdout.\nstderr: {stderr_tail}"
-            )
+            raise RuntimeError(f"Script produced no output on stdout.\nstderr: {stderr_tail}")
         # Try full stdout first
         try:
             return json.loads(stdout)
@@ -194,7 +227,10 @@ class TaskGrader(ABC):
         return Path(self.private_dir) / "eval" / relative_path
 
     def score(
-        self, value: float | None, explanation: str = "", feedback: str | None = None,
+        self,
+        value: float | None,
+        explanation: str = "",
+        feedback: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> ScoreBundle:
         """Return a single-score bundle."""
@@ -205,7 +241,10 @@ class TaskGrader(ABC):
         return self.bundle(None, explanation, feedback=feedback)
 
     def bundle(
-        self, value: float | None, explanation: str = "", feedback: str | None = None,
+        self,
+        value: float | None,
+        explanation: str = "",
+        feedback: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> ScoreBundle:
         """Create a ScoreBundle from a score value and explanation."""
@@ -231,9 +270,13 @@ class TaskGrader(ABC):
     ) -> ScoreBundle:
         """GraderInterface implementation. Sets context and calls evaluate().
 
-        Enforces self.timeout around the entire evaluate() call.
+        Enforces self.timeout around the entire evaluate() call. On tune-mode
+        attempts, prepends ``describe_tune()`` to the bundle's feedback so the
+        agent learns the per-grader tune contract from the eval result itself
+        — no startup RPC, no CORAL.md plumbing.
         """
         self.codebase_path = codebase_path
+        self.tasks = tasks
 
         loop = asyncio.get_running_loop()
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
@@ -242,15 +285,30 @@ class TaskGrader(ABC):
                     loop.run_in_executor(pool, self.evaluate),
                     timeout=self.timeout,
                 )
-            except asyncio.TimeoutError:
-                return self.fail(f"Evaluation timed out after {self.timeout}s")
+            except TimeoutError:
+                bundle = self.fail(f"Evaluation timed out after {self.timeout}s")
+                return self._annotate_tune(bundle)
 
         if isinstance(result, ScoreBundle):
-            return result
+            return self._annotate_tune(result)
 
         # float/int — wrap in a ScoreBundle
         value = float(result)
-        return ScoreBundle(
+        bundle = ScoreBundle(
             scores={"eval": Score(value=value, name="eval")},
             aggregated=value,
         )
+        return self._annotate_tune(bundle)
+
+    def _annotate_tune(self, bundle: ScoreBundle) -> ScoreBundle:
+        """Prepend the tune-mode description to bundle feedback when self.tune.
+
+        No-op on real submissions. Keeps the per-grader tune contract attached
+        to the result instead of templated into CORAL.md at startup.
+        """
+        if not self.tune:
+            return bundle
+        description = (self.describe_tune() or "").strip() or DEFAULT_TUNE_DESCRIPTION
+        prefix = f"[--tune mode] {description}"
+        bundle.feedback = f"{prefix}\n\n{bundle.feedback}" if bundle.feedback else prefix
+        return bundle
