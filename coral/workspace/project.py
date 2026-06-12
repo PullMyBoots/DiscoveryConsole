@@ -15,7 +15,6 @@ from coral.hub._island import island_root
 from coral.hub.checkpoint import init_checkpoint_repo
 from coral.workspace.repo import (
     clone_or_init_repo,
-    copy_eval_to_private,
     copy_private_data,
     copy_seed_directory,
 )
@@ -284,9 +283,6 @@ def create_project(config: CoralConfig, config_dir: Path | None = None) -> Proje
     # Resolve task_dir (directory containing task.yaml)
     task_source_dir = config.task_dir or config_dir or Path.cwd()
 
-    # Auto-copy eval/ to .coral/private/eval/ (if present in task directory)
-    copy_eval_to_private(task_source_dir, coral_dir)
-
     # Auto-copy seed/ into repo (if present in task directory)
     seed_dir = task_source_dir / "seed"
     if seed_dir.is_dir():
@@ -297,12 +293,10 @@ def create_project(config: CoralConfig, config_dir: Path | None = None) -> Proje
         copy_private_data(config.grader.private, coral_dir, config_dir or Path.cwd())
 
     # Bootstrap the grader's isolated venv at .coral/private/grader_venv/ and
-    # run any user-supplied install steps. Skipped when the task is still on the
-    # legacy eval/grader.py (in-process) path.
-    if config.grader.entrypoint:
-        from coral.workspace.grader_env import setup_grader_env
+    # run any user-supplied install steps.
+    from coral.workspace.grader_env import setup_grader_env
 
-        setup_grader_env(coral_dir, config.grader, config_dir or Path.cwd())
+    setup_grader_env(coral_dir, config.grader, config_dir or Path.cwd())
 
     return ProjectPaths(
         results_dir=results_dir,

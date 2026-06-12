@@ -1,7 +1,8 @@
 """TaskGrader base class — the single way to write graders for CORAL tasks.
 
-Task authors create eval/grader.py in their task directory, inheriting from
-TaskGrader and implementing evaluate():
+Task authors ship a small grader package (referenced by ``grader.entrypoint``
+in task.yaml) with a class inheriting from TaskGrader and implementing
+evaluate():
 
     from coral.grader import TaskGrader
 
@@ -228,17 +229,6 @@ class TaskGrader(ABC):
             f"stdout (last 500): {stdout[-500:]}\n"
             f"stderr (last 500): {result.stderr.strip()[-500:]}"
         )
-
-    def read_eval(self, relative_path: str) -> str:
-        """Read a file from the eval/ directory (inside .coral/private/eval/)."""
-        path = Path(self.private_dir) / "eval" / relative_path
-        if not path.exists():
-            raise FileNotFoundError(f"Eval file not found: {relative_path}")
-        return path.read_text()
-
-    def read_eval_path(self, relative_path: str) -> Path:
-        """Get the absolute path to a file in eval/."""
-        return Path(self.private_dir) / "eval" / relative_path
 
     def score(
         self,

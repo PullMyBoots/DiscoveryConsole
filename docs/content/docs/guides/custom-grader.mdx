@@ -14,10 +14,10 @@ own and from the agent's worktree.
 > Two reusable judge grader packages ship under `examples/` — static and
 > dynamic rubric — and the rest of this page applies unchanged.
 
-## Quick start (deprecated path)
+## Quick start
 
 The fastest way to scaffold a new task — `coral init my-task` — drops a
-`task.yaml` plus an `eval/grader.py` file you can edit:
+`task.yaml` plus a packaged grader stub you can edit:
 
 ```python
 from coral.grader import TaskGrader
@@ -29,13 +29,7 @@ class Grader(TaskGrader):
         return float(result.stdout.strip())
 ```
 
-This auto-discovery path still works but emits a `DeprecationWarning` on
-load. Once your grader is non-trivial, migrate it to a package (next
-section). The same `TaskGrader` API applies in both setups.
-
-## Recommended: package your grader
-
-Wrap your grader in a small Python package so CORAL can install it via
+The grader ships as a small Python package so CORAL can install it via
 `uv pip install` into the grader venv. The repo's `examples/erdos/grader/`
 is a minimal reference.
 
@@ -98,8 +92,7 @@ worktree permission rules — your grader source stays hidden.
 
 ## TaskGrader helpers
 
-`TaskGrader` provides several helper methods. They behave the same whether
-your grader runs from a package or from `eval/grader.py`.
+`TaskGrader` provides several helper methods.
 
 ### `run_program(filename, *args, timeout=300)`
 
@@ -112,16 +105,23 @@ print(result.stderr)    # captured stderr
 print(result.returncode)  # exit code
 ```
 
-### `read_eval(relative_path)` / `read_eval_path(relative_path)`
+### Hidden data files
 
-These read from the legacy private `eval/` directory. When your grader
-ships as a package, prefer `importlib.resources` to load bundled data:
+Test data, answer keys, and helper modules ship inside the grader package —
+the convention is a `taskdata/` directory next to `grader.py`:
 
 ```python
-import importlib.resources
+from pathlib import Path
 
-data_dir = str(importlib.resources.files("my_task_grader.data"))
+_TASKDATA = Path(__file__).parent / "taskdata"
+answers = _TASKDATA / "answers" / "test_labels.npz"
 ```
+
+This works for editable and wheel installs alike, and hatchling bundles
+non-Python files under `packages` automatically. For files that can't live
+in the package (very large datasets, files shared across tasks), list them
+under `grader.private` in task.yaml — they are copied to
+`.coral/private/<name>` and readable via `self.private_dir`.
 
 ### `score(value, explanation="")`
 
