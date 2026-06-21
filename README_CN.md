@@ -1,140 +1,185 @@
-
 <div align="center">
 
-<img src="assets/logo.png" alt="CORAL logo —— 多 Agent 自主编程基础设施" width="360">
+# DiscoveryConsole
 
-## **一键启动智能体群组，共享知识，无限进化**
+### 面向 Codex 重度用户的人机协作开放式科研控制台
 
-<p>
-  <img src="assets/mit_logo.png" alt="MIT" height="50">
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="assets/nus.png" alt="NUS" height="50">
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="assets/stanford.png" alt="Stanford" height="50">
-</p>
-
-[![Paper](https://img.shields.io/badge/Paper-arXiv%3A2604.01658-B31B1B.svg?logo=arxiv&logoColor=white)](https://arxiv.org/abs/2604.01658v1)
-[![Blog](https://img.shields.io/badge/Blog-CORAL-FF6B6B.svg?logo=hashnode&logoColor=white)](https://human-agent-society.github.io/CORAL/)
 [![Apache 2.0 License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg?logo=python&logoColor=white)](https://python.org)
+[![Built on CORAL](https://img.shields.io/badge/Built%20on-CORAL-2F6F73.svg)](https://github.com/Human-Agent-Society/CORAL)
+[![Codex workflow](https://img.shields.io/badge/Codex-research%20workflow-111827.svg)](codex-skill/README.md)
 
 [English](README.md) | **中文**
 
 </div>
 
 <p align="center">
-<a href="#安装">安装</a> · <a href="#支持的-agent">支持的 Agent</a> · <a href="#工作原理">工作原理</a> · <a href="#示例">示例</a> · <a href="https://docs.coralxyz.com/">文档</a> · <a href="https://arxiv.org/abs/2604.01658v1">论文</a>
+<a href="#这是什么">这是什么</a> · <a href="#为什么需要它">为什么需要它</a> · <a href="#快速开始">快速开始</a> · <a href="#系统结构">系统结构</a> · <a href="#与-coral-的关系">与 CORAL 的关系</a>
 </p>
 
-**CORAL** 是用于构建**自主 AI Agent 组织**的基础设施 —— Agent 持续运行实验、共享知识、不断进化。只需提供代码库和评分脚本，CORAL 负责其余的一切：隔离工作空间、安全评估、持久共享状态、多 Agent 协作。原生集成 Claude Code、OpenCode、Codex、Cursor Agent、Kiro。
+**DiscoveryConsole** 是一个科研驾驶舱：它面向 Codex / Claude Code 重度用户，把 Codex 的工作空间准备能力、CORAL 的多智能体执行能力、评测脚本、知识库和控制面板组织成一个完整的开放式科研搜索循环。
 
-### 🔥 News
+它不是“把问题丢给 agent 等答案”的工具，而是让人类研究者持续掌舵：设计评测、启动多路线探索、观察分数和证据、暂停注入反馈、审计结果可信度，并进入下一轮搜索。
 
-- **[2026-06-13]** 旧版 `eval/grader.py` grader 自动发现已废弃并移除 —— 改用 `grader.entrypoint` 指向打包的 grader。详见 [自定义 Grader 文档](https://docs.coralxyz.com/guides/custom-grader)。
-- **[2026-04-24]** 新增 Rubric 评审 —— 两个开箱即用的 LLM 评审 grader 包，专为开放式任务（报告、备忘、法律分析）设计。详见 [Rubric Judges 文档](https://docs.coralxyz.com/guides/rubric-judge)。
-- **[2026-04-03]** 我们的论文 "CORAL: Towards Autonomous Multi-Agent Evolution for Open-Ended Discovery" 现已发布！请查看 [Arxiv](https://arxiv.org/abs/2604.01658v1)。
-- **[2026-03-18]** CORAL 正式发布！点击查看 [Blog](https://human-agent-society.github.io/CORAL/)。
+![DiscoveryConsole dashboard preview](assets/demo.gif)
 
-![CORAL 多 Agent 自主编程演示 —— 多个编程 Agent 在独立 git worktree 中并行运行,通过共享状态目录交换知识](assets/demo.gif)
+## 这是什么
 
-### 安装
+DiscoveryConsole 把三部分组合成一个工作流：
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/Human-Agent-Society/CORAL/main/install.sh | sh
+- **科研控制台**：启动、暂停、恢复和观察多 agent 运行。
+- **Codex skill 工作流**：让 Codex 在启动前准备知识库、eval、baseline、agent/island 技术路线。
+- **基于 CORAL 的执行引擎**：隔离 agent worktree、运行 grader、记录 attempts、共享知识。
+
+理想流程是：
+
+```text
+定义研究任务
+→ Codex 准备知识库和评测标准
+→ 记录 baseline
+→ 启动多条 agent 探索路线
+→ 观察分数、队列、日志和知识沉淀
+→ 暂停并注入人类反馈
+→ 审计证据和潜在 reward hacking
+→ 开启下一轮 timestamp 搜索
 ```
 
-通过 `uv tool install` 全局安装 `coral`。如需指定版本，设置 `CORAL_VERSION=v0.7.0`。手动安装、开发模式、前置依赖等详见[安装文档](https://docs.coralxyz.com/getting-started/installation)。
+## 为什么需要它
+
+现在的 coding agent 已经很会写代码，但科研真正困难的是周围的循环：
+
+- eval 设计不清晰，容易被刷分；
+- baseline 和评测版本没有冻结；
+- agent 跑完只留下零散日志，没有知识沉淀；
+- 多个 agent 容易重复同一个方向；
+- 人类反馈无法自然进入下一轮；
+- 一个高分经常被误认为“真实进展”。
+
+DiscoveryConsole 把**分数可信度**当成产品的一部分。一次运行不是一堆 agent 输出，而是一个 timestamped experiment site：包含 grader、eval profile、baseline、知识来源、agent brief、attempt、日志和 review note。
+
+## 适合谁
+
+DiscoveryConsole 适合：
+
+- 每天大量使用 Codex / Claude Code 的 AI 研究者和博士生；
+- 需要同时跑很多实验路线的算法工程师；
+- 独立研究者；
+- 正在探索开放式优化、模型、系统或科学问题的团队。
+
+它不是一键论文生成器。人类仍然是评估者、审稿人和决策者。
+
+## 快速开始
+
+### 1. 从本仓库安装 CLI
 
 ```bash
-coral init my-task                       # 生成任务模板
-cd my-task && coral start -c task.yaml   # 启动 Agent
+curl -fsSL https://raw.githubusercontent.com/PullMyBoots/DiscoveryConsole/main/install.sh | sh
 ```
 
-`coral init` 也会创建 research-workbench 风格的 `knowledge/` 骨架：
-资料目录、notes、agent/island brief 目录、`manifest.jsonl` 和
-`eval_spec.md` 都会预先生成，方便 Codex 在启动前准备参考资料、评测可信度说明和
-agent 初始技术路线。
-
-### Codex 科研工作台 Skill
-
-本仓库附带一个可选的 Codex skill，用于让 Codex 按研究工作台流程准备
-CORAL workspace：
+当前 CLI 命令仍然叫 `coral`，因为 DiscoveryConsole 现在是基于 CORAL 改造的执行引擎。
 
 ```bash
+coral --help
+```
+
+### 2. 安装 Codex skill
+
+克隆仓库，然后把 skill 复制到 Codex skills 目录：
+
+```bash
+git clone https://github.com/PullMyBoots/DiscoveryConsole.git
+cd DiscoveryConsole
 mkdir -p "$HOME/.codex/skills"
 cp -a codex-skill/coral-research-workbench "$HOME/.codex/skills/"
 ```
 
-安装后，Codex 会知道如何准备知识库、eval 档位、baseline 记录、
-资源感知的 evaluator 池、agent/island 技术路线，并把启动交给 CORAL 控制面板。详见
-[codex-skill/README.md](codex-skill/README.md)。
+重新打开一个 Codex session，让 Codex 使用 `coral-research-workbench` skill 来准备 DiscoveryConsole/CORAL workspace。
 
-### 支持的 Agent
+### 3. 创建或准备任务
 
-| Agent | `agents.runtime` |
-|-------|------------------|
-| [Claude Code](https://github.com/anthropics/claude-code) —— 默认 | `claude_code` |
-| [Codex](https://github.com/openai/codex) | `codex` |
-| [Cursor Agent](https://cursor.com/docs/cli/overview) | `cursor` |
-| [Kiro](https://kiro.dev) | `kiro` |
-| [OpenCode](https://github.com/opencode-ai/opencode) | `opencode` |
-
-每个 Agent 需自行安装并完成认证。各运行时的详细配置（含[ LiteLLM Gateway](https://docs.coralxyz.com/guides/gateway) 自定义模型代理）见 [Agent 运行时文档](https://docs.coralxyz.com/guides/agent-runtimes)。
-
-### 工作原理
-
-<p align="center">
-  <img src="assets/coral_diagram_trans.jpg" alt="CORAL 架构图:多个编程 Agent 运行在隔离的 git worktree 中,通过 .coral/public/ 共享状态,由 grader 守护进程评分" width="800">
-</p>
-
-每个 Agent 跑在自己的 git worktree 里。共享状态（历史记录、笔记、技能）放在 `.coral/public/`，软链到所有 worktree —— Agent 实时看到彼此的工作。Grader 守护进程为每次提交打分。后台管理器通过心跳机制打断 Agent 并注入指令（`reflect`、`consolidate`、`pivot`）。
-
-深入阅读：[核心概念](https://docs.coralxyz.com/concepts) · [多 Agent 运行](https://docs.coralxyz.com/guides/multi-agent) · [评估循环](https://docs.coralxyz.com/concepts/eval-loop)
-
-### 示例
-
-`examples/` 下有开箱即用的任务配置：
-
-| 任务 | 领域 | 说明 |
-|------|------|------|
-| **circle_packing** | 优化 | 把 26 个圆塞进单位正方形，最大化半径总和 |
-| **erdos** | 数学 | 求解数学猜想 |
-| **kernel_builder** | 系统 | VLIW SIMD kernel 优化 |
-| **kernel_engineering** | 系统 | GPU kernel 优化 |
-| **mnist** | 机器学习 | 手写数字识别 |
-| **spaceship_titanic** | 机器学习 | Kaggle 竞赛 |
-| **stanford_covid_vaccine** | 生物/ML | mRNA 降解预测 |
-
-完整任务清单与详解见[示例文档](https://docs.coralxyz.com/examples)。
-
-### 开发
+最小脚手架：
 
 ```bash
-# 装开发依赖
-uv sync --extra dev
-
-# 跑测试
-uv run pytest tests/ -v
-
-# lint + 格式化
-uv run ruff check .
-uv run ruff format .
+coral init my-task
+cd my-task
+coral validate .
 ```
 
-### 参与贡献
+在推荐工作流里，Codex 会在启动前进一步准备：
 
-欢迎社区贡献 —— bug 报告、`examples/` 下的新任务、新的 agent runtime、文档改进，都很欢迎。先看这里：
+- `knowledge/` 资料、笔记和 eval specification；
+- packaged grader 和 eval profiles；
+- baseline attempt 记录；
+- agent seed briefs 和 island themes；
+- 资源和运行时间配置。
 
-- [CONTRIBUTING.md](CONTRIBUTING.md) —— 开发环境、分支与 commit 规范、PR 流程、测试与 lint 命令。
-- [AGENTS.md](AGENTS.md) —— AI 辅助贡献的规则（CORAL 本身就是 agent 基础设施，所以我们对 agent 写的 PR 有一些具体要求）。
+### 4. 打开控制台
 
-想深入了解代码结构，可以读 [CLAUDE.md](CLAUDE.md) 里的架构说明 —— 覆盖 eval loop、`.coral/{public,private}/` 划分、grader daemon、runtime registry。
+```bash
+coral ui
+```
 
-本项目在 Apache 2.0 [LICENSE](LICENSE) 许可下开源。
+在 dashboard 里检查 readiness、调整高层参数、启动运行、暂停/恢复、审计 attempts，并把知识沉淀到下一轮。
 
-### 引用
+## 系统结构
 
-⭐ 如果觉得 CORAL 对有帮助的话，欢迎给我们的 GitHub Repo 点个 Star。也可以考虑引用我们 (请使用下方的官方 BibTeX，而不要使用 Google Scholar 自动生成的引用，因为后者可能会截断作者列表)：
+```text
+人类研究者
+  ↕
+DiscoveryConsole dashboard
+  ↕
+Codex research-workbench skill
+  ↕
+CORAL execution engine
+  ├─ 隔离的 agent worktrees
+  ├─ grader daemon 和 eval queue
+  ├─ timestamped run directories
+  ├─ public knowledge 和 attempts
+  └─ 可选 multi-island search 和 migration
+```
+
+关键概念：
+
+- **Timestamped runs**：每次启动都是一个冻结的实验现场。
+- **Knowledge base**：启动前资料和运行时笔记统一放在 `.coral/public/knowledge/`。
+- **Eval profiles**：quick/medium/full/stress 区分快速迭代和最终证据。
+- **Agent briefs**：Codex 为不同 agent 准备有区分度的初始技术路线。
+- **Human feedback**：暂停后写入 next-resume instruction，恢复时所有 agent 都能听到。
+- **Review**：分数、baseline、eval version、guardrail 和潜在作弊一起审计。
+
+## 支持的 Agent 后端
+
+控制台聚焦当前工作流最重要的三个后端：
+
+| Backend | Runtime value | 说明 |
+| --- | --- | --- |
+| Codex | `codex` | 支持 per-agent model 和 reasoning effort。 |
+| Claude Code | `claude_code` | 支持 per-agent model 和 effort。 |
+| OpenCode | `opencode` | 支持 provider/model 和 provider-specific variant。 |
+
+每个后端都需要在运行机器上单独安装并认证。
+
+## Codex Skill
+
+配套 skill 位于 [codex-skill/coral-research-workbench](codex-skill/coral-research-workbench/)。它不是 CLI 的替代品，而是告诉 Codex 如何在启动前准备高质量 workspace。
+
+它包含脚本用于：
+
+- 检查 CORAL/DiscoveryConsole 执行引擎是否安装；
+- 准备 knowledge skeleton；
+- 写入 eval progress；
+- 记录 baseline attempt；
+- 生成 agent 和 island briefs。
+
+详见 [codex-skill/README.md](codex-skill/README.md)。
+
+## 与 CORAL 的关系
+
+DiscoveryConsole 基于 [CORAL](https://github.com/Human-Agent-Society/CORAL) 构建。CORAL 是 Apache-2.0 开源的自主多智能体编程和自我进化框架。
+
+本仓库包含经过改造的 CORAL 执行引擎，以及面向 Codex 的科研控制台和 skill 工作流。原始 CORAL 论文和项目仍然是执行模型的基础：隔离 worktree、共享状态、grader daemon、heartbeat、多 agent evolution。
+
+如果你在研究中使用本项目，请引用底层 CORAL 引擎：
 
 ```bibtex
 @article{qu2026coral,
@@ -145,6 +190,23 @@ uv run ruff format .
 }
 ```
 
-### 致谢
+## 当前状态
 
-我们感谢 [TNT Accelerator](https://www.tnt.so/) 提供的慷慨支持，包括在开发过程中给予帮助的各种 API 积分。也要感谢许多如 [OpenEvolve](https://github.com/algorithmicsuperintelligence/openevolve)、[autoresearch](https://github.com/karpathy/autoresearch)、[TTT Discover](https://arxiv.org/abs/2601.16175) 等的十分有启发性的工作，这些工作为 Coral 的诞生奠定了基础。
+DiscoveryConsole 目前是面向第一批用户的 preview。文档、打包和工作流交互还会继续变化。当前重点是和真实 Codex/Claude Code 重度用户一起验证 human-in-the-loop 科研搜索循环，而不是承诺稳定 API。
+
+## 开发
+
+```bash
+uv sync --extra dev
+uv run pytest -q
+uv run ruff check .
+
+cd web
+npm install
+npm run lint
+npm run build
+```
+
+## License
+
+DiscoveryConsole 使用 Apache 2.0 [LICENSE](LICENSE)。由于本项目基于 CORAL，原始 CORAL 的 attribution 和 license terms 会被保留。
