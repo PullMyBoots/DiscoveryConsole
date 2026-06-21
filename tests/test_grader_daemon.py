@@ -19,12 +19,13 @@ from coral.grader.daemon import (
     _find_pending,
     _is_git_repo,
     _repo_dir,
+    planned_evaluating_hashes,
     process_pending_once,
     run_daemon,
 )
 from coral.hooks.post_commit import submit_eval
 from coral.hub.attempts import read_attempt, read_eval_count, write_attempt
-from coral.types import Attempt
+from coral.types import Attempt, Score
 
 # --------------------------------------------------------------------------- #
 # Fixtures                                                                    #
@@ -724,6 +725,70 @@ def test_eval_count_correct_under_parallel_grading():
             sys.path.pop(0)
 
 
+def test_planned_evaluating_hashes_respects_parallel_resource_pool():
+    cfg = CoralConfig.from_dict(
+        {
+            "task": {"name": "x", "description": "y"},
+            "grader": {
+                "resources": {"gpu_count": 1},
+                "parallel": {
+                    "max_workers": 4,
+                    "resources": {"gpu_count": 2, "gpu_ids": ["0", "1"]},
+                },
+            },
+        }
+    )
+    pending = [
+        Attempt(
+            commit_hash=f"h{i}",
+            agent_id=f"agent-{i}",
+            title="pending",
+            score=None,
+            status="pending",
+            parent_hash=None,
+            timestamp=f"2026-06-01T10:0{i}:00Z",
+        )
+        for i in range(4)
+    ]
+
+    assert planned_evaluating_hashes(pending, cfg) == {"h0", "h1"}
+
+
+def test_drain_limits_parallelism_by_gpu_resource_pool():
+    """max_workers=4 but two available GPUs means only two evals overlap."""
+    with tempfile.TemporaryDirectory() as d:
+        repo = _init_repo_and_coral(Path(d))
+        log_path = _install_concurrency_probe_grader(repo, sleep_seconds=0.25)
+        _set_config(
+            repo,
+            max_pending_per_agent=0,
+            resources={"gpu_count": 1},
+            parallel={
+                "max_workers": 4,
+                "resources": {"gpu_count": 2, "gpu_ids": ["0", "1"]},
+            },
+        )
+
+        sys.path.insert(0, str(repo))
+        try:
+            hashes = _submit_n(repo, 4)
+            finalized = process_pending_once(repo / ".coral")
+            assert len(finalized) == 4
+
+            data = json.loads(log_path.read_text())
+            assert data["max"] == 2
+            finals = [read_attempt(repo / ".coral", commit_hash) for commit_hash in hashes]
+            assigned = [
+                final.metadata["resources"].get("CORAL_GPU_IDS")
+                for final in finals
+                if final is not None
+            ]
+            assert set(assigned) <= {"0", "1"}
+            assert {"0", "1"}.issubset(set(assigned))
+        finally:
+            sys.path.pop(0)
+
+
 def test_invalid_max_workers_rejected():
     """grader.parallel.max_workers must be >= 1."""
     with pytest.raises(ValueError, match="max_workers"):
@@ -772,6 +837,147 @@ def test_find_pending_multi_island_scans_every_island(tmp_path):
     assert hashes == {"aaa000", "bbb111"}
 
 
+def test_select_pending_wave_limits_daemon_batch_to_current_workers():
+    """The live daemon reloads config between waves, so it should not pre-submit all pending."""
+    import coral.grader.daemon as daemon
+
+    config = CoralConfig.from_dict(
+        {
+            "task": {"name": "daemon_test", "description": "Daemon test"},
+            "grader": {"parallel": {"max_workers": 2}},
+            "agents": {"count": 1},
+        }
+    )
+    pending = [
+        Attempt(
+            commit_hash=f"h{i}",
+            agent_id="agent-1",
+            title=f"pending {i}",
+            score=None,
+            status="pending",
+            parent_hash=None,
+            timestamp=f"2026-05-31T10:0{i}:00Z",
+        )
+        for i in range(5)
+    ]
+
+    wave = daemon._select_pending_wave(pending, config, max_workers=2)
+
+    assert [attempt.commit_hash for attempt in wave] == ["h0", "h1"]
+
+
+def test_select_pending_wave_respects_resource_pool():
+    """Resource-aware live daemon waves match the current evaluator capacity."""
+    import coral.grader.daemon as daemon
+
+    config = CoralConfig.from_dict(
+        {
+            "task": {"name": "daemon_test", "description": "Daemon test"},
+            "grader": {
+                "resources": {"gpu_count": 1},
+                "parallel": {
+                    "max_workers": 4,
+                    "resources": {"gpu_count": 2, "gpu_ids": ["0", "1"]},
+                },
+            },
+            "agents": {"count": 1},
+        }
+    )
+    pending = [
+        Attempt(
+            commit_hash=f"h{i}",
+            agent_id="agent-1",
+            title=f"pending {i}",
+            score=None,
+            status="pending",
+            parent_hash=None,
+            timestamp=f"2026-05-31T10:0{i}:00Z",
+        )
+        for i in range(4)
+    ]
+
+    wave = daemon._select_pending_wave(pending, config, max_workers=4)
+
+    assert [attempt.commit_hash for attempt in wave] == ["h0", "h1"]
+
+
+def test_run_daemon_reloads_config_for_future_eval_waves(tmp_path, monkeypatch):
+    """Live control-panel edits to eval profile/workers apply without daemon restart."""
+    import coral.grader.daemon as daemon
+
+    coral_dir = tmp_path / ".coral"
+    (coral_dir / "public").mkdir(parents=True)
+    config_path = coral_dir / "config.yaml"
+    config_path.write_text(
+        """
+task:
+  name: daemon_test
+  description: Daemon test
+grader:
+  entrypoint: g:Grader
+  profile: quick
+  parallel:
+    max_workers: 1
+agents:
+  count: 1
+"""
+    )
+
+    pending = [
+        Attempt(
+            commit_hash="abc123",
+            agent_id="agent-1",
+            title="pending",
+            score=None,
+            status="pending",
+            parent_hash=None,
+            timestamp="2026-05-31T10:00:00Z",
+        )
+    ]
+    seen: list[tuple[str, int]] = []
+
+    class StopEvent:
+        stopped = False
+
+        def is_set(self) -> bool:
+            return self.stopped
+
+        def set(self) -> None:
+            self.stopped = True
+
+    stop_event = StopEvent()
+
+    monkeypatch.setattr(daemon.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(daemon, "_find_pending", lambda _coral_dir: pending)
+
+    def fake_drain(_pending, _config_path, _coral_dir, config, *, max_workers, **_kwargs):
+        seen.append((config.grader.profile, max_workers))
+        if len(seen) == 1:
+            config_path.write_text(
+                """
+task:
+  name: daemon_test
+  description: Daemon test
+grader:
+  entrypoint: g:Grader
+  profile: full
+  parallel:
+    max_workers: 3
+agents:
+  count: 1
+"""
+            )
+        else:
+            stop_event.set()
+        return []
+
+    monkeypatch.setattr(daemon, "_drain_pending", fake_drain)
+
+    daemon.run_daemon(coral_dir, stop_event=stop_event)
+
+    assert seen == [("quick", 1), ("full", 3)]
+
+
 def test_grade_one_finalizes_migrated_pending_attempt_in_current_island(tmp_path, monkeypatch):
     """If migration moves a pending attempt mid-grade, finalize into its current island."""
     import coral.grader.daemon as daemon
@@ -813,7 +1019,12 @@ def test_grade_one_finalizes_migrated_pending_attempt_in_current_island(tmp_path
     config = CoralConfig.from_dict(
         {
             "task": {"name": "daemon_test", "description": "Daemon test"},
-            "grader": {"timeout": 60},
+            "grader": {
+                "timeout": 60,
+                "eval_version": "eval_v9",
+                "profile": "quick",
+                "resources": {"cpu_cores": 4, "memory_gb": 16, "gpu_count": 1},
+            },
             "agents": {"count": 1},
         }
     )
@@ -826,7 +1037,10 @@ def test_grade_one_finalizes_migrated_pending_attempt_in_current_island(tmp_path
         aggregated = 0.9
         feedback = "ok"
         metadata = {"grader_key": "grader_value"}
-        scores = {}
+        scores = {
+            "breakthrough": Score(value=0.95, name="breakthrough", explanation="strong"),
+            "guardrail": Score(value=0.8, name="guardrail", explanation="acceptable"),
+        }
 
     monkeypatch.setattr(daemon, "_repo_dir", lambda _coral_dir: repo)
     monkeypatch.setattr(
@@ -846,6 +1060,14 @@ def test_grade_one_finalizes_migrated_pending_attempt_in_current_island(tmp_path
     assert current.score == 0.9
     assert current.metadata["island_id"] == "1"
     assert current.metadata["grader_key"] == "grader_value"
+    assert current.metadata["eval_version"] == "eval_v9"
+    assert current.metadata["eval_profile"] == "quick"
+    assert current.metadata["resources"]["CORAL_CPU_CORES"] == "4"
+    assert current.metadata["resources"]["CORAL_MEMORY_GB"] == "16"
+    assert current.metadata["resources"]["CORAL_GPU_COUNT"] == "1"
+    assert current.metadata["aggregated_score"] == 0.9
+    assert current.metadata["score_components"]["breakthrough"]["value"] == 0.95
+    assert current.metadata["score_components"]["guardrail"]["explanation"] == "acceptable"
     assert read_eval_count(coral_dir, island_id="0") == 0
     assert read_eval_count(coral_dir, island_id="1") == 1
     assert read_eval_count(coral_dir) == 1

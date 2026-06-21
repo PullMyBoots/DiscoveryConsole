@@ -123,6 +123,9 @@ class OpenCodeRuntime:
             "--format",
             "json",
         ]
+        variant = _opencode_variant(runtime_options)
+        if variant:
+            cmd.extend(["--variant", variant])
 
         if resume_session_id:
             cmd.extend(["--continue", "--session", resume_session_id])
@@ -230,3 +233,19 @@ class OpenCodeRuntime:
             err_file=err_file,
             err_path=err_path,
         )
+
+
+def _opencode_variant(runtime_options: dict[str, Any] | None) -> str | None:
+    """Translate CORAL's generic reasoning knob to OpenCode `--variant`."""
+    if not runtime_options:
+        return None
+    value = runtime_options.get("model_reasoning_effort")
+    if value is None:
+        value = runtime_options.get("variant")
+    if value is None:
+        return None
+    variant = str(value).strip()
+    if variant:
+        return variant
+    logger.warning(f"Ignoring empty OpenCode variant: {value}")
+    return None

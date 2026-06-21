@@ -69,6 +69,9 @@ erdos_project/
 autoresearch/
 results/
 test_claude_code/
+/e2e-workbench-*/
+/my-task/
+/.playwright-cli/
 
 # OpenCode local installation and generated files
 .opencode/

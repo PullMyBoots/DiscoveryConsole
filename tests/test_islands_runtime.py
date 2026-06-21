@@ -296,12 +296,13 @@ def test_partition_and_setup_threads_island_id_into_worktrees(tmp_path):
         assert bc.exists(), f"missing .coral_island in {wt}"
         assert bc.read_text().strip() == spec.island_id
 
-        # Symlink must resolve into the right island
+        # Legacy notes/ symlink must resolve into the right island's unified
+        # knowledge tree.
         notes_link = wt / ".claude" / "notes"
         assert notes_link.is_symlink()
         target = notes_link.resolve()
         expected_island_root = paths.coral_dir / "islands" / spec.island_id
-        assert target.parent == expected_island_root.resolve()
+        assert target == (expected_island_root / "knowledge" / "notes").resolve()
 
 
 def test_agent_manager_partitions_specs_in_start_all_setup(tmp_path):

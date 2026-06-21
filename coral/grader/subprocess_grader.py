@@ -19,7 +19,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from coral.config import GraderConfig
+from coral.config import GraderConfig, ResourceConfig
 from coral.types import ScoreBundle, Task
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ def _main():
 
     cls = _resolve_entrypoint(payload["entrypoint"])
 
-    from coral.config import GraderConfig
+    from coral.config import GraderConfig, ResourceConfig
     from coral.grader.task_grader import TaskGrader
     from coral.types import Task
 
@@ -65,6 +65,8 @@ def _main():
     config = GraderConfig(**payload["config"])
     grader = cls(config=config)
     grader.private_dir = payload["private_dir"]
+    if "resource_override" in payload:
+        grader._resource_override = ResourceConfig(**payload["resource_override"])
 
     tasks = [Task.from_dict(t) for t in payload["tasks"]]
     # Forward island_id alongside codebase_path/tasks so the inner grader
@@ -130,9 +132,13 @@ class SubprocessGrader:
         self.worker_python = Path(worker_python)
         self.config = config
         self.private_dir = private_dir
+        self._resource_override: ResourceConfig | None = None
 
     @property
     def timeout(self) -> int | None:
+        profile = self.config.profiles.get(self.config.profile)
+        if profile is not None and profile.timeout > 0:
+            return profile.timeout
         return self.config.timeout or None
 
     async def grade(
@@ -148,6 +154,8 @@ class SubprocessGrader:
             "codebase_path": codebase_path,
             "tasks": [t.to_dict() for t in tasks],
         }
+        if self._resource_override is not None:
+            payload["resource_override"] = dataclasses.asdict(self._resource_override)
         # Forward island_id so the worker-side grader.grade() can set
         # self.island_id for hub reads. Key is omitted entirely when None
         # (single-island mode) to keep payloads identical to the legacy shape.

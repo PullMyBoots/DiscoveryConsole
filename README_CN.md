@@ -50,6 +50,25 @@ coral init my-task                       # 生成任务模板
 cd my-task && coral start -c task.yaml   # 启动 Agent
 ```
 
+`coral init` 也会创建 research-workbench 风格的 `knowledge/` 骨架：
+资料目录、notes、agent/island brief 目录、`manifest.jsonl` 和
+`eval_spec.md` 都会预先生成，方便 Codex 在启动前准备参考资料、评测可信度说明和
+agent 初始技术路线。
+
+### Codex 科研工作台 Skill
+
+本仓库附带一个可选的 Codex skill，用于让 Codex 按研究工作台流程准备
+CORAL workspace：
+
+```bash
+mkdir -p "$HOME/.codex/skills"
+cp -a codex-skill/coral-research-workbench "$HOME/.codex/skills/"
+```
+
+安装后，Codex 会知道如何准备知识库、eval 档位、baseline 记录、
+资源感知的 evaluator 池、agent/island 技术路线，并把启动交给 CORAL 控制面板。详见
+[codex-skill/README.md](codex-skill/README.md)。
+
 ### 支持的 Agent
 
 | Agent | `agents.runtime` |

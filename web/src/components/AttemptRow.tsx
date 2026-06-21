@@ -1,4 +1,5 @@
 import type { Attempt } from "../lib/api";
+import { scoreComponents, scoreLabel, scoreValue } from "../lib/scores";
 import StatusBadge from "./StatusBadge";
 
 interface Props {
@@ -7,9 +8,20 @@ interface Props {
   expanded: boolean;
   onToggle: () => void;
   highlight?: boolean;
+  metric?: string;
 }
 
-export default function AttemptRow({ attempt: a, rank, expanded, onToggle, highlight }: Props) {
+export default function AttemptRow({
+  attempt: a,
+  rank,
+  expanded,
+  onToggle,
+  highlight,
+  metric = "score",
+}: Props) {
+  const displayScore = scoreValue(a, metric);
+  const components = scoreComponents(a);
+  const componentEntries = Object.entries(components);
   return (
     <>
       <tr
@@ -20,7 +32,7 @@ export default function AttemptRow({ attempt: a, rank, expanded, onToggle, highl
       >
         <td className="py-2.5 px-3 font-mono text-xs text-muted-fg">{rank}</td>
         <td className="py-2.5 px-3 font-mono text-[13px] font-medium">
-          {a.score != null ? String(a.score) : "---"}
+          {displayScore != null ? String(displayScore) : "---"}
         </td>
         <td className="py-2.5 px-3 font-mono text-xs">{a.agent_id}</td>
         <td className="py-2.5 px-3">
@@ -44,11 +56,18 @@ export default function AttemptRow({ attempt: a, rank, expanded, onToggle, highl
 
               {/* Metadata grid */}
               <div className="grid grid-cols-2 gap-x-8 gap-y-3 mb-4">
-                <Field label="Score">
+                <Field label={scoreLabel(metric)}>
                   <span className="font-display text-lg font-bold">
-                    {a.score != null ? String(a.score) : "---"}
+                    {displayScore != null ? String(displayScore) : "---"}
                   </span>
                 </Field>
+                {metric !== "score" && (
+                  <Field label="Total score">
+                    <span className="font-mono text-[13px]">
+                      {a.score != null ? String(a.score) : "---"}
+                    </span>
+                  </Field>
+                )}
                 <Field label="Agent">
                   <span className="font-mono text-[13px]">{a.agent_id}</span>
                 </Field>
@@ -69,6 +88,31 @@ export default function AttemptRow({ attempt: a, rank, expanded, onToggle, highl
                   </span>
                 </Field>
               </div>
+
+              {componentEntries.length > 0 && (
+                <div className="mb-4">
+                  <p className="font-mono text-[10px] tracking-widest uppercase text-muted-fg mb-2">
+                    Score components
+                  </p>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {componentEntries.map(([name, component]) => (
+                      <div key={name} className="rounded-lg border border-border bg-background p-3">
+                        <div className="mb-1 flex items-center justify-between gap-3">
+                          <span className="font-mono text-[11px] font-medium">{name}</span>
+                          <span className="font-mono text-[12px]">
+                            {typeof component.value === "number" ? String(component.value) : "---"}
+                          </span>
+                        </div>
+                        {component.explanation && (
+                          <p className="font-body text-[11px] leading-relaxed text-muted-fg">
+                            {component.explanation}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Feedback */}
               {a.feedback && (

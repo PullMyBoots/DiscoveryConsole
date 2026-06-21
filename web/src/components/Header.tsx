@@ -2,18 +2,20 @@ import { useEffect, useState } from "react";
 import { api, type RunStatus } from "../lib/api";
 import { useSSE } from "../hooks/useSSE";
 import RunSelector from "./RunSelector";
+import { Icon, IconBadge, type IconName } from "./Ui";
 
-type Tab = "overview" | "knowledge" | "logs";
+type Tab = "control" | "overview" | "knowledge" | "logs";
 
 interface Props {
   activeTab: Tab;
   onTabChange: (tab: Tab) => void;
 }
 
-const tabs: { key: Tab; label: string }[] = [
-  { key: "overview", label: "Overview" },
-  { key: "knowledge", label: "Knowledge" },
-  { key: "logs", label: "Logs" },
+const tabs: { key: Tab; label: string; icon: IconName }[] = [
+  { key: "control", label: "Control", icon: "control" },
+  { key: "overview", label: "Overview", icon: "chart" },
+  { key: "knowledge", label: "Knowledge", icon: "book" },
+  { key: "logs", label: "Logs", icon: "logs" },
 ];
 
 export default function Header({ activeTab, onTabChange }: Props) {
@@ -25,6 +27,8 @@ export default function Header({ activeTab, onTabChange }: Props) {
 
   useEffect(refresh, []);
   useSSE({
+    "run:update": refresh,
+    "run:switched": refresh,
     "attempt:new": refresh,
     "attempt:update": refresh,
     "eval:update": refresh,
@@ -33,12 +37,13 @@ export default function Header({ activeTab, onTabChange }: Props) {
   const activeAgents = status?.agents.filter((a) => a.status === "active").length ?? 0;
 
   return (
-    <header className="sticky top-0 z-50 bg-background border-b border-border px-6 py-2.5 flex items-center gap-6">
+    <header className="sticky top-0 z-50 flex items-center gap-6 border-b border-border bg-background/92 px-6 py-2.5 backdrop-blur">
       {/* Branding + task */}
       <div className="flex items-center gap-3 shrink-0">
+        <IconBadge name="spark" />
         <span className="font-display text-base font-bold tracking-tight">CORAL</span>
         <span className="text-border-strong">/</span>
-        <RunSelector />
+        <RunSelector managerAlive={status?.manager_alive ?? false} />
       </div>
 
       {/* Tab pills */}
@@ -49,11 +54,14 @@ export default function Header({ activeTab, onTabChange }: Props) {
             onClick={() => onTabChange(t.key)}
             className={`px-4 py-1.5 text-[13px] font-body rounded-lg transition-colors duration-100 ${
               activeTab === t.key
-                ? "bg-foreground text-background font-medium"
-                : "text-muted-fg hover:text-foreground hover:bg-muted"
+                ? "bg-accent text-white font-medium shadow-sm"
+                : "text-muted-fg hover:text-foreground hover:bg-surface-muted"
             }`}
           >
-            {t.label}
+            <span className="inline-flex items-center gap-2">
+              <Icon name={t.icon} className="h-3.5 w-3.5" />
+              <span>{t.label}</span>
+            </span>
           </button>
         ))}
       </nav>
@@ -65,7 +73,7 @@ export default function Header({ activeTab, onTabChange }: Props) {
             <span className="flex items-center gap-1.5">
               <span
                 className={`w-1.5 h-1.5 rounded-full ${
-                  status.manager_alive ? "bg-green-500" : "bg-border-strong"
+                  status.manager_alive ? "bg-success" : "bg-border-strong"
                 }`}
               />
               {activeAgents > 0

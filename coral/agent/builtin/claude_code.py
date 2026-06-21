@@ -139,6 +139,9 @@ class ClaudeCodeRuntime:
             "--model",
             model,
         ]
+        effort = _claude_effort(runtime_options)
+        if effort:
+            cmd.extend(["--effort", effort])
         # 0 = no cap — let the underlying `claude` CLI run until it exits
         # naturally. The manager still restarts on any exit, preserving context
         # via --resume below.
@@ -270,3 +273,19 @@ class ClaudeCodeRuntime:
             err_file=err_file,
             err_path=err_path,
         )
+
+
+def _claude_effort(runtime_options: dict[str, Any] | None) -> str | None:
+    """Translate CORAL's generic reasoning knob to Claude Code `--effort`."""
+    if not runtime_options:
+        return None
+    value = runtime_options.get("model_reasoning_effort")
+    if value is None:
+        value = runtime_options.get("effort")
+    if value is None:
+        return None
+    effort = str(value).strip().lower()
+    if effort in {"low", "medium", "high", "xhigh", "max"}:
+        return effort
+    logger.warning(f"Ignoring unsupported Claude Code effort: {value}")
+    return None

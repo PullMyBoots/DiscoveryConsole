@@ -182,6 +182,7 @@ def setup_shared_state(
 
     for item in _SHARED_STATE_ITEMS:
         src = state_root / item
+        src.mkdir(parents=True, exist_ok=True)
         dst = shared_dir / item
         # If a previous (buggy) run wrote into a real local dir at this path
         # instead of a symlink, migrate any files into the shared dir then
@@ -214,6 +215,7 @@ def setup_shared_state(
 # island state root. Kept in module scope so :func:`setup_shared_state`
 # and :func:`repoint_shared_state` stay in sync.
 _SHARED_STATE_ITEMS: tuple[str, ...] = (
+    "knowledge",
     "notes",
     "skills",
     "agents",

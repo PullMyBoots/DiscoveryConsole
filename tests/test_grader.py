@@ -8,7 +8,13 @@ from pathlib import Path
 
 import pytest
 
-from coral.config import CoralConfig, GraderConfig, TaskConfig
+from coral.config import (
+    CoralConfig,
+    GraderConfig,
+    GraderProfileConfig,
+    ResourceConfig,
+    TaskConfig,
+)
 from coral.grader.builtin.function_grader import FunctionGrader, function_grader
 from coral.grader.loader import load_grader
 from coral.grader.protocol import GraderInterface
@@ -340,6 +346,78 @@ def test_grade_annotates_tune_attempts_when_evaluate_returns_float():
     assert bundle.feedback.startswith("[--tune mode]")
 
 
+def test_task_grader_profile_args_and_timeout_override():
+    grader = _StaticGrader(
+        config=GraderConfig(
+            args={"profile": "base", "program_file": "solution.py"},
+            timeout=900,
+            profile="quick",
+            profiles={
+                "quick": GraderProfileConfig(
+                    timeout=120,
+                    args={"profile": "quick", "cases": 5},
+                )
+            },
+        ),
+        bundle=ScoreBundle(scores={}, aggregated=0.5),
+    )
+
+    assert grader.profile == "quick"
+    assert grader.args == {"profile": "quick", "program_file": "solution.py", "cases": 5}
+    assert grader.timeout == 120
+
+
+def test_task_grader_profile_resources_override_subprocess_env(tmp_path):
+    class _Noop(TaskGrader):
+        def evaluate(self):
+            return 0.0
+
+    probe = tmp_path / "env_probe.py"
+    probe.write_text(
+        "import json, os\n"
+        "keys = [\n"
+        "  'CORAL_CPU_CORES', 'CORAL_MEMORY_GB', 'CORAL_GPU_COUNT',\n"
+        "  'CORAL_GPU_IDS', 'CUDA_VISIBLE_DEVICES', 'OMP_NUM_THREADS'\n"
+        "]\n"
+        "print(json.dumps({k: os.environ.get(k) for k in keys}, sort_keys=True))\n"
+    )
+    grader = _Noop(
+        config=GraderConfig(
+            profile="quick",
+            resources=ResourceConfig(cpu_cores=4, memory_gb=32),
+            profiles={
+                "quick": GraderProfileConfig(
+                    resources=ResourceConfig(gpu_count=2, gpu_ids=["0", "2"])
+                )
+            },
+        )
+    )
+    grader.codebase_path = str(tmp_path)
+
+    result = grader.run_program("env_probe.py")
+
+    assert result.returncode == 0
+    env = json.loads(result.stdout)
+    assert env["CORAL_CPU_CORES"] == "4"
+    assert env["CORAL_MEMORY_GB"] == "32"
+    assert env["CORAL_GPU_COUNT"] == "2"
+    assert env["CORAL_GPU_IDS"] == "0,2"
+    assert env["CUDA_VISIBLE_DEVICES"] == "0,2"
+    assert env["OMP_NUM_THREADS"] == "4"
+
+
+def test_task_grader_stamps_eval_context_on_bundle():
+    grader = _StaticGrader(
+        config=GraderConfig(eval_version="eval_v2", profile="full"),
+        bundle=ScoreBundle(scores={}, aggregated=0.5),
+    )
+
+    bundle = asyncio.run(grader.grade("/tmp/x", [_real_task()]))
+
+    assert bundle.metadata["eval_version"] == "eval_v2"
+    assert bundle.metadata["eval_profile"] == "full"
+
+
 def test_loader_passes_grader_config_and_args():
     """GraderConfig (incl. args) from task.yaml must reach the loaded grader."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -395,6 +473,21 @@ def test_loader_returns_subprocess_grader_for_entrypoint():
         assert grader.worker_python == venv_python
         assert grader.timeout == 42
         assert grader.private_dir == str(coral_dir / "private")
+
+
+def test_subprocess_grader_uses_profile_timeout():
+    grader = SubprocessGrader(
+        entrypoint="my_pkg.grader:Grader",
+        worker_python=Path("/tmp/python"),
+        private_dir="/tmp/private",
+        config=GraderConfig(
+            timeout=300,
+            profile="quick",
+            profiles={"quick": GraderProfileConfig(timeout=30)},
+        ),
+    )
+
+    assert grader.timeout == 30
 
 
 def test_loader_raises_when_entrypoint_set_but_venv_missing():
@@ -458,6 +551,29 @@ def test_eval_logs_dir_single_island_writes_under_public():
 
         assert out == coral / "public" / "eval_logs" / "abc1234"
         assert out.is_dir()
+
+
+def test_report_progress_writes_jsonl_event():
+    with tempfile.TemporaryDirectory() as tmp:
+        coral = Path(tmp)
+        (coral / "private").mkdir()
+        checkout = coral / "private" / "grader_checkouts" / "abc1234"
+        checkout.mkdir(parents=True)
+        g = _bare_task_grader(coral / "private", codebase_path=checkout, island_id=None)
+        g.config = GraderConfig(eval_version="eval_v3", profile="quick")
+
+        g.report_progress(current=2, total=4, phase="evaluate", message="halfway")
+
+        progress = coral / "public" / "eval_logs" / "abc1234" / "progress.jsonl"
+        event = json.loads(progress.read_text().splitlines()[-1])
+        assert event["type"] == "progress"
+        assert event["job_id"] == "abc1234"
+        assert event["current"] == 2
+        assert event["total"] == 4
+        assert event["percent"] == 0.5
+        assert event["message"] == "halfway"
+        assert event["eval_version"] == "eval_v3"
+        assert event["eval_profile"] == "quick"
 
 
 def test_eval_logs_dir_multi_island_writes_under_island_dir():

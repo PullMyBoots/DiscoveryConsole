@@ -16,6 +16,10 @@ def generate_coral_md(
     single_agent: bool = False,
     shared_dir: str = ".claude",
     island_id: str | int | None = None,
+    agent_seed_brief: str = "",
+    agent_seed_brief_path: str = "",
+    island_theme: str = "",
+    island_theme_path: str = "",
 ) -> str:
     """Produce the CORAL.md file that agents read at startup.
 
@@ -25,6 +29,10 @@ def generate_coral_md(
         single_agent: If True, use simplified single-agent template (no sharing references)
         shared_dir: Name of the shared state directory (e.g. ".claude", ".codex", ".opencode")
         island_id: Agent's island in multi-island mode (formats a provenance hint)
+        agent_seed_brief: Codex-prepared starting route for this agent
+        agent_seed_brief_path: Shared-state path where the starting route is stored
+        island_theme: Codex-prepared theme for this agent's island
+        island_theme_path: Shared-state path where the island theme is stored
     """
     template_path = _SINGLE_TEMPLATE_PATH if single_agent else _TEMPLATE_PATH
     template = template_path.read_text()
@@ -113,6 +121,24 @@ def generate_coral_md(
             "their own attempts, notes, and skills, but you cannot see their "
             "state directly. Each island evolves independently.\n"
         )
+
+    if agent_seed_brief or island_theme:
+        rendered += "\n\n## Codex-prepared starting route\n\n"
+        rendered += (
+            "Codex prepared the initial technical directions before launch. "
+            "Use them as your starting route, then update shared knowledge when "
+            "evidence from evals suggests a better direction.\n"
+        )
+        if island_theme:
+            rendered += "\n### Island theme\n\n"
+            if island_theme_path:
+                rendered += f"Source: `{island_theme_path}`\n\n"
+            rendered += island_theme.strip() + "\n"
+        if agent_seed_brief:
+            rendered += "\n### Your agent seed brief\n\n"
+            if agent_seed_brief_path:
+                rendered += f"Source: `{agent_seed_brief_path}`\n\n"
+            rendered += agent_seed_brief.strip() + "\n"
 
     return rendered
 

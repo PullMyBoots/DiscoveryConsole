@@ -176,3 +176,28 @@ def test_generate_coral_md_multi_island_mentions_island(tmp_path):
     md_lower = md.lower()
     assert "island" in md_lower
     assert "island `2`" in md or "island 2" in md, "expected mention of island 2"
+
+
+def test_generate_coral_md_includes_codex_prepared_starting_route():
+    cfg = CoralConfig.from_dict(
+        {
+            "task": {"name": "t", "description": "d"},
+            "islands": {"count": 2},
+        }
+    )
+
+    md = generate_coral_md(
+        cfg,
+        agent_id="0-agent-1",
+        island_id="0",
+        shared_dir=".codex",
+        island_theme="# Sparse Island\n\nFocus on sparse search.",
+        island_theme_path=".codex/knowledge/briefs/islands/0.md",
+        agent_seed_brief="# 0-agent-1\n\nStart from the sparse baseline.",
+        agent_seed_brief_path=".codex/knowledge/briefs/agent-seeds/0-agent-1.md",
+    )
+
+    assert "Codex-prepared starting route" in md
+    assert "Sparse Island" in md
+    assert "sparse baseline" in md
+    assert ".codex/knowledge/briefs/agent-seeds/0-agent-1.md" in md

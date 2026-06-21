@@ -2,14 +2,23 @@ import { useEffect } from "react";
 import { createPortal } from "react-dom";
 import ScoreChart from "./ScoreChart";
 import type { Attempt } from "../lib/api";
+import { scoreLabel, scoreValue } from "../lib/scores";
 
 interface Props {
   attempts: Attempt[];
   direction?: "maximize" | "minimize";
+  metric?: string;
+  onSelectAttempt?: (attempt: Attempt) => void;
   onClose: () => void;
 }
 
-export default function ChartModal({ attempts, direction, onClose }: Props) {
+export default function ChartModal({
+  attempts,
+  direction,
+  metric = "score",
+  onSelectAttempt,
+  onClose,
+}: Props) {
   // Close on Esc
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -40,7 +49,7 @@ export default function ChartModal({ attempts, direction, onClose }: Props) {
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-2.5 border-b border-border shrink-0">
           <span className="font-mono text-[11px] text-muted-fg uppercase tracking-widest">
-            Score Chart — {attempts.filter((a) => a.score !== null).length} scored attempts
+            {scoreLabel(metric)} — {attempts.filter((a) => scoreValue(a, metric) !== null).length} scored attempts
           </span>
           <div className="flex items-center gap-2">
             <span className="font-mono text-[10px] text-muted-fg">
@@ -64,6 +73,8 @@ export default function ChartModal({ attempts, direction, onClose }: Props) {
             attempts={attempts}
             direction={direction}
             expanded={true}
+            metric={metric}
+            onSelectAttempt={onSelectAttempt}
           />
         </div>
       </div>

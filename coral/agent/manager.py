@@ -17,6 +17,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from coral.agent.assignments import (
     AgentSpec,
     partition_into_islands,
@@ -122,6 +124,9 @@ class AgentManager:
         self._stop_event = threading.Event()
         self._stopping = False
         self._start_time: datetime | None = None
+        self._runtime_start_epoch: float | None = None
+        self._run_deadline_epoch: float | None = None
+        self._last_runtime_limit_seconds: int | None = None
         self._restart_counts: dict[str, int] = {}
         self._agent_eval_counts: dict[str, int] = {}
         self._agent_best_scores: dict[str, float] = {}
@@ -152,6 +157,13 @@ class AgentManager:
         self._pause_count: dict[str, int] = {}
         self._last_fault_at: dict[str, str] = {}
         self._pending_restart_after_pause: set[str] = set()
+        # Agents explicitly stopped from the dashboard. This is deliberately
+        # separate from crash-burst PAUSED state so manual intervention does
+        # not interact with the reliability breaker.
+        self._manual_stopped_agents: set[str] = set()
+        self._agent_control_applied: dict[str, str] = {}
+        self._heartbeat_started_at: dict[str, float] = {}
+        self._heartbeat_detail: dict[str, str] = {}
         self._gateway: Any | None = None
         self._gateway_keys: dict[str, str] = {}  # agent_id -> proxy key
         self._grader_proc: multiprocessing.Process | None = None
@@ -198,12 +210,324 @@ class AgentManager:
                 return Path(candidate)
         return Path.cwd()
 
+    def _iso_from_epoch(self, value: float | None) -> str | None:
+        if value is None:
+            return None
+        return datetime.fromtimestamp(value, UTC).isoformat()
+
+    def _configured_runtime_limit_seconds(self) -> int:
+        """Read the current run-level runtime cap, allowing live UI edits.
+
+        The manager owns a config object loaded at process start, but the
+        control panel can save `config.yaml` while the run is active. Reading
+        only this small field lets users extend/shorten the deadline without
+        restarting the manager or mutating agent topology.
+        """
+        limit = self.config.run.max_runtime_seconds
+        if self.paths is None:
+            return limit
+        config_path = self.paths.coral_dir / "config.yaml"
+        if not config_path.exists():
+            return limit
+        try:
+            data = yaml.safe_load(config_path.read_text()) or {}
+            value = (data.get("run") or {}).get("max_runtime_seconds", limit)
+            limit = int(value or 0)
+        except (OSError, TypeError, ValueError, yaml.YAMLError):
+            return self.config.run.max_runtime_seconds
+        if limit < 0:
+            return self.config.run.max_runtime_seconds
+        self.config.run.max_runtime_seconds = limit
+        return limit
+
+    def _agent_control_path(self, agent_id: str) -> Path | None:
+        if self.paths is None:
+            return None
+        return self.paths.coral_dir / "public" / "control" / "agents" / f"{agent_id}.json"
+
+    def _read_agent_control_payload(self, agent_id: str) -> dict[str, Any]:
+        path = self._agent_control_path(agent_id)
+        if path is None or not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _write_agent_control_payload(self, agent_id: str, payload: dict[str, Any]) -> None:
+        path = self._agent_control_path(agent_id)
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(f".{path.name}.tmp")
+            tmp.write_text(json.dumps(payload, indent=2, sort_keys=True))
+            tmp.replace(path)
+        except OSError as exc:
+            logger.warning(f"Failed to update control file for {agent_id}: {exc}")
+
+    def _knowledge_dir_for_agent(self, island_id: str | int | None) -> Path | None:
+        if self.paths is None:
+            return None
+        try:
+            return island_root(self.paths.coral_dir, island_id) / "knowledge"
+        except ValueError:
+            return self.paths.coral_dir / "public" / "knowledge"
+
+    def _read_agent_seed_brief(
+        self,
+        agent_id: str,
+        island_id: str | int | None,
+        shared_dir: str,
+    ) -> tuple[str, str]:
+        """Read the Codex-prepared starting route for an agent, if present."""
+        if self.paths is None:
+            return "", ""
+
+        candidate_roots: list[Path] = []
+        visible = self._knowledge_dir_for_agent(island_id)
+        if visible is not None:
+            candidate_roots.append(visible)
+        public = self.paths.coral_dir / "public" / "knowledge"
+        if public not in candidate_roots:
+            candidate_roots.append(public)
+
+        for knowledge_dir in candidate_roots:
+            seed_dir = knowledge_dir / "briefs" / "agent-seeds"
+            candidates = [seed_dir / f"{agent_id}.md"]
+            if seed_dir.is_dir():
+                candidates.extend(
+                    path
+                    for path in sorted(seed_dir.glob("*.md"))
+                    if path.stem == agent_id or agent_id in path.stem
+                )
+            for path in candidates:
+                if not path.is_file():
+                    continue
+                text = self._read_prompt_brief(path)
+                if text:
+                    return text, self._shared_knowledge_ref(path, knowledge_dir, visible, shared_dir)
+        return "", ""
+
+    def _read_island_theme_brief(
+        self,
+        island_id: str | int | None,
+        shared_dir: str,
+    ) -> tuple[str, str]:
+        """Read the Codex-prepared island theme for this agent, if present."""
+        if self.paths is None or island_id is None:
+            return "", ""
+        visible = self._knowledge_dir_for_agent(island_id)
+        public = self.paths.coral_dir / "public" / "knowledge"
+        candidate_roots = [root for root in (visible, public) if root is not None]
+        seen: set[Path] = set()
+        for knowledge_dir in candidate_roots:
+            if knowledge_dir in seen:
+                continue
+            seen.add(knowledge_dir)
+            for subdir in ("islands", "island-themes"):
+                path = knowledge_dir / "briefs" / subdir / f"{island_id}.md"
+                if not path.is_file():
+                    continue
+                text = self._read_prompt_brief(path)
+                if text:
+                    return text, self._shared_knowledge_ref(path, knowledge_dir, visible, shared_dir)
+        return "", ""
+
+    def _read_prompt_brief(self, path: Path, *, max_chars: int = 6000) -> str:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return ""
+        if len(text) <= max_chars:
+            return text
+        return text[: max_chars - 1].rstrip() + "..."
+
+    def _shared_knowledge_ref(
+        self,
+        path: Path,
+        knowledge_dir: Path,
+        visible_knowledge_dir: Path | None,
+        shared_dir: str,
+    ) -> str:
+        try:
+            rel = path.relative_to(knowledge_dir).as_posix()
+        except ValueError:
+            return str(path)
+        if visible_knowledge_dir is not None and knowledge_dir.resolve() == visible_knowledge_dir.resolve():
+            return f"{shared_dir}/knowledge/{rel}"
+        return str(path)
+
+    def _read_agent_control_request(self, agent_id: str) -> str | None:
+        data = self._read_agent_control_payload(agent_id)
+        if not data:
+            return None
+        desired = str(data.get("desired_state", "")).strip().lower()
+        return desired if desired in {"running", "stopped"} else None
+
+    def _apply_agent_prompt_request(
+        self,
+        idx: int,
+        handle: AgentHandle,
+        payload: dict[str, Any],
+    ) -> bool:
+        action = str(payload.get("action", "")).strip().lower()
+        if action != "prompt":
+            return False
+        prompt = str(payload.get("prompt", "")).strip()
+        if not prompt:
+            return False
+
+        agent_id = handle.agent_id
+        command_id = str(payload.get("command_id") or payload.get("updated_at") or "")
+        if command_id and self._agent_control_applied.get(agent_id) == command_id:
+            return False
+
+        logger.info(f"Dashboard prompt requested for {agent_id}")
+        if self.verbose:
+            print(f"[coral] injecting dashboard prompt into {agent_id}")
+
+        self._manual_stopped_agents.discard(agent_id)
+        self._paused_until.pop(agent_id, None)
+        self._pending_restart_after_pause.discard(agent_id)
+        self._clear_agent_heartbeat(agent_id)
+        if handle.alive:
+            self.handles[idx] = self._interrupt_and_resume(
+                idx,
+                prompt,
+                prompt_source="dashboard-prompt",
+            )
+        elif self._running:
+            self.handles[idx] = self._restart_agent(
+                idx,
+                prompt=prompt,
+                prompt_source="dashboard-prompt",
+            )
+        else:
+            return False
+
+        if command_id:
+            self._agent_control_applied[agent_id] = command_id
+        payload["action"] = "idle"
+        payload["desired_state"] = "running"
+        payload["prompt"] = ""
+        payload["last_prompt_applied_at"] = datetime.now(UTC).isoformat()
+        self._write_agent_control_payload(agent_id, payload)
+        self._write_agent_pids()
+        self._persist_agent_state()
+        return True
+
+    def _apply_agent_control_requests(self) -> None:
+        """Apply per-agent stop/resume/prompt requests written by the dashboard."""
+        if self.paths is None:
+            return
+
+        for i, handle in enumerate(list(self.handles)):
+            agent_id = handle.agent_id
+            payload = self._read_agent_control_payload(agent_id)
+            if self._apply_agent_prompt_request(i, handle, payload):
+                continue
+            desired = str(payload.get("desired_state", "")).strip().lower()
+            if desired == "stopped" and agent_id not in self._manual_stopped_agents:
+                logger.info(f"Dashboard requested stop for {agent_id}")
+                if self.verbose:
+                    print(f"[coral] stopping {agent_id} by dashboard request")
+                self._manual_stopped_agents.add(agent_id)
+                self._pending_restart_after_pause.discard(agent_id)
+                self._paused_until.pop(agent_id, None)
+                self._clear_agent_heartbeat(agent_id)
+                self._save_sessions()
+                handle.interrupt()
+                if handle.alive:
+                    handle.stop()
+                self._save_sessions()
+                self._write_agent_pids()
+                self._persist_agent_state()
+            elif desired == "running" and agent_id in self._manual_stopped_agents:
+                logger.info(f"Dashboard requested resume for {agent_id}")
+                if self.verbose:
+                    print(f"[coral] resuming {agent_id} by dashboard request")
+                self._manual_stopped_agents.discard(agent_id)
+                self._paused_until.pop(agent_id, None)
+                self._pending_restart_after_pause.discard(agent_id)
+                self._clear_agent_heartbeat(agent_id)
+                if not handle.alive and self._running:
+                    self.handles[i] = self._restart_agent(
+                        i,
+                        prompt="Resume work after a manual dashboard pause.",
+                        prompt_source="manual-resume",
+                    )
+                    self._write_agent_pids()
+                self._persist_agent_state()
+
+    def _refresh_runtime_deadline(self, *, force: bool = False, status: str = "running") -> None:
+        if self._runtime_start_epoch is None:
+            now = time.time()
+            self._runtime_start_epoch = now
+            self._start_time = datetime.fromtimestamp(now, UTC)
+
+        limit = self._configured_runtime_limit_seconds()
+        deadline = self._runtime_start_epoch + limit if limit > 0 else None
+        changed = (
+            force
+            or limit != self._last_runtime_limit_seconds
+            or deadline != self._run_deadline_epoch
+        )
+        self._last_runtime_limit_seconds = limit
+        self._run_deadline_epoch = deadline
+        if changed:
+            self._write_run_state(status=status)
+
+    def _write_run_state(self, *, status: str, stopped_reason: str | None = None) -> None:
+        """Persist run-level lifecycle state for the dashboard."""
+        if self.paths is None:
+            return
+        now = time.time()
+        remaining = None
+        if self._run_deadline_epoch is not None:
+            remaining = max(0.0, self._run_deadline_epoch - now)
+        state = {
+            "status": status,
+            "started_at": self._iso_from_epoch(self._runtime_start_epoch),
+            "deadline_at": self._iso_from_epoch(self._run_deadline_epoch),
+            "max_runtime_seconds": self._last_runtime_limit_seconds
+            if self._last_runtime_limit_seconds is not None
+            else self.config.run.max_runtime_seconds,
+            "remaining_seconds": remaining,
+            "stopped_reason": stopped_reason,
+            "updated_at": datetime.fromtimestamp(now, UTC).isoformat(),
+        }
+        path = self.paths.coral_dir / "public" / "run_state.json"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(".run_state.json.tmp")
+            tmp.write_text(json.dumps(state, indent=2))
+            tmp.replace(path)
+        except OSError as exc:
+            logger.warning(f"Failed to write run_state.json: {exc}")
+
+    def _maybe_stop_for_deadline(self) -> bool:
+        """Stop the whole run when the configured wall-clock deadline expires."""
+        self._refresh_runtime_deadline(status="running")
+        if self._run_deadline_epoch is None:
+            return False
+        if time.time() < self._run_deadline_epoch:
+            return False
+        logger.info("Run deadline reached; stopping all agents and grader")
+        if self.verbose:
+            print("[coral] Run deadline reached; stopping all agents and grader")
+        self.stop_all(reason="deadline")
+        return True
+
     def start_all(self) -> list[AgentHandle]:
         """Create workspace structure and spawn all agents."""
         self._start_time = datetime.now(UTC)
+        self._runtime_start_epoch = self._start_time.timestamp()
 
         # 1. Create project structure
         self.paths = create_project(self.config, config_dir=self.config_dir)
+        self._refresh_runtime_deadline(force=True, status="starting")
         logger.info(f"Run directory: {self.paths.run_dir}")
         logger.info(f"  coral_dir: {self.paths.coral_dir}")
         logger.info(f"  repo_dir:  {self.paths.repo_dir}")
@@ -262,6 +586,7 @@ class AgentManager:
 
         self.handles = handles
         self._running = True
+        self._write_run_state(status="running")
 
         # 5. Write PID file
         self._write_pid_file()
@@ -581,12 +906,25 @@ class AgentManager:
         # Generate instruction file (CLAUDE.md, AGENTS.md, etc.)
         instruction_file = runtime.instruction_filename
         single_agent = len(self.specs) == 1
+        agent_seed_brief, agent_seed_brief_path = self._read_agent_seed_brief(
+            agent_id,
+            island_id,
+            shared_dir_name,
+        )
+        island_theme, island_theme_path = self._read_island_theme_brief(
+            island_id,
+            shared_dir_name,
+        )
         coral_md = generate_coral_md(
             self.config,
             agent_id,
             single_agent=single_agent,
             shared_dir=shared_dir_name,
             island_id=island_id,
+            agent_seed_brief=agent_seed_brief,
+            agent_seed_brief_path=agent_seed_brief_path,
+            island_theme=island_theme,
+            island_theme_path=island_theme_path,
         )
         (worktree_path / instruction_file).write_text(coral_md)
 
@@ -698,7 +1036,9 @@ class AgentManager:
     ) -> list[AgentHandle]:
         """Resume agents into an existing run's worktrees."""
         self._start_time = datetime.now(UTC)
+        self._runtime_start_epoch = self._start_time.timestamp()
         self.paths = paths
+        self._refresh_runtime_deadline(force=True, status="starting")
 
         # Start gateway if configured
         self._start_gateway_if_enabled()
@@ -783,6 +1123,7 @@ class AgentManager:
 
         self.handles = handles
         self._running = True
+        self._write_run_state(status="running")
         self._write_pid_file()
         atexit.register(self._atexit_cleanup)
         return handles
@@ -829,7 +1170,7 @@ class AgentManager:
             return self._runtime_for(agent_id).extract_session_id(logs[-1])
         return None
 
-    def stop_all(self) -> None:
+    def stop_all(self, *, reason: str = "manual") -> None:
         """Gracefully stop all agents.
 
         Uses SIGINT first so Claude Code can save sessions for later resume,
@@ -838,6 +1179,7 @@ class AgentManager:
         if self._stopping:
             return
         self._stopping = True
+        self._write_run_state(status="stopping", stopped_reason=reason)
         self._running = False
         self._stop_event.set()
         # Save session IDs before killing processes
@@ -857,6 +1199,7 @@ class AgentManager:
         if self._gateway:
             self._gateway.stop()
             self._gateway = None
+        self._write_run_state(status="stopped", stopped_reason=reason)
         logger.info("All agents stopped.")
 
     def status(self) -> list[dict[str, Any]]:
@@ -1075,6 +1418,8 @@ class AgentManager:
         observation. This avoids re-classifying the same dead handle and
         double-counting the exit that originally triggered the pause.
         """
+        if agent_id in self._manual_stopped_agents:
+            return True
         until = self._paused_until.get(agent_id)
         if until is None:
             return False
@@ -1271,20 +1616,41 @@ class AgentManager:
             ts = ts.replace(tzinfo=UTC)
         return (datetime.now(UTC) - ts).total_seconds()
 
+    def _mark_agent_heartbeat(self, agent_id: str, detail: str) -> None:
+        self._heartbeat_started_at[agent_id] = time.time()
+        self._heartbeat_detail[agent_id] = detail
+
+    def _clear_agent_heartbeat(self, agent_id: str) -> None:
+        self._heartbeat_started_at.pop(agent_id, None)
+        self._heartbeat_detail.pop(agent_id, None)
+
     def _persist_agent_state(self) -> None:
-        """Persist current paused/active state to public/agent_state.json."""
+        """Persist current visible lifecycle state to public/agent_state.json."""
         if self.paths is None:
             return
         document = AgentStateDocument()
         for handle in self.handles:
             agent_id = handle.agent_id
+            state_started_at = None
+            state_detail = None
             until = self._paused_until.get(agent_id)
-            state = "paused" if until is not None else "active"
+            if agent_id in self._manual_stopped_agents:
+                state = "stopped"
+            elif until is not None:
+                state = "paused"
+            elif agent_id in self._heartbeat_started_at:
+                state = "heartbeat"
+                state_started_at = self._heartbeat_started_at.get(agent_id)
+                state_detail = self._heartbeat_detail.get(agent_id)
+            else:
+                state = "active"
             document.agents[agent_id] = AgentRuntimeState(
                 state=state,
                 paused_until=until,
                 pause_count=self._pause_count.get(agent_id, 0),
                 last_fault_at=self._last_fault_at.get(agent_id),
+                state_started_at=state_started_at,
+                state_detail=state_detail,
             )
         try:
             write_agent_state(self.paths.coral_dir, document)
@@ -1545,6 +1911,8 @@ class AgentManager:
         agent_id = candidate.agent_id
         if not any(handle.agent_id == agent_id for handle in self.handles):
             return "missing-handle"
+        if agent_id in self._manual_stopped_agents:
+            return "manual-stopped"
         if self._is_paused(agent_id):
             return "paused"
 
@@ -1556,7 +1924,7 @@ class AgentManager:
 
     @staticmethod
     def _migration_block_is_retriable(reason: str) -> bool:
-        return reason == "paused"
+        return reason in {"paused", "manual-stopped"}
 
     @staticmethod
     def _migration_defer_reason(reason: str) -> str:
@@ -1853,6 +2221,10 @@ class AgentManager:
         logger.info(f"Monitoring {len(self.handles)} agent(s) (check every {check_interval}s)...")
 
         while self._running:
+            if self._maybe_stop_for_deadline():
+                break
+            self._apply_agent_control_requests()
+
             # Check for new attempts
             current_attempts = self._get_seen_attempts()
             new_attempts = current_attempts - seen_attempts
@@ -1870,6 +2242,8 @@ class AgentManager:
                     committing_agent_id = attempt_data.get("agent_id")
                     if not committing_agent_id:
                         continue
+                    had_heartbeat_state = committing_agent_id in self._heartbeat_started_at
+                    self._clear_agent_heartbeat(committing_agent_id)
 
                     # Increment per-agent eval count
                     self._agent_eval_counts[committing_agent_id] = (
@@ -1919,6 +2293,8 @@ class AgentManager:
                         minimize=minimize,
                     )
                     if not actions:
+                        if had_heartbeat_state:
+                            self._persist_agent_state()
                         continue
 
                     # Find the committing agent's handle
@@ -1972,7 +2348,9 @@ class AgentManager:
                         combined_prompt,
                         prompt_source=f"heartbeat:{names}",
                     )
+                    self._mark_agent_heartbeat(committing_agent_id, names)
                     self._write_agent_pids()
+                    self._persist_agent_state()
 
             # Migration phase. Cheap when disabled (single-island mode or
             # config off): should_run() short-circuits without scanning disk.
@@ -2183,7 +2561,7 @@ class AgentManager:
             pids = []
             pid_map = {}
             for handle in self.handles:
-                if handle.process and handle.process.pid:
+                if handle.process and handle.process.pid and handle.alive:
                     pids.append(str(handle.process.pid))
                     pid_map[handle.agent_id] = handle.process.pid
             agent_pids_file.write_text("\n".join(pids))

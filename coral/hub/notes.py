@@ -37,7 +37,7 @@ def _is_user_note(p: Path) -> bool:
     with ``_`` (convention for system-managed files like `_synthesis/`,
     `_connections.md`, `_open-questions.md`).
     """
-    return p.name != "notes.md" and not p.name.startswith("_")
+    return p.name not in {"notes.md", "index.md"} and not p.name.startswith("_")
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
@@ -171,9 +171,14 @@ def list_notes(
 
     entries: list[dict[str, Any]] = []
     for view_root in _note_view_roots(coral_dir):
-        sub = _list_notes_single(coral_dir, island_id=view_root.name, clean=False)
+        if view_root.name == "public":
+            sub = _collect_from_dir(view_root / "notes")
+        else:
+            sub = _list_notes_single(coral_dir, island_id=view_root.name, clean=False)
+            for entry in sub:
+                entry["island_id"] = view_root.name
         for entry in sub:
-            entry["island_id"] = view_root.name
+            entry.setdefault("_path", entry.get("_path"))
         entries.extend(sub)
     entries.sort(key=_sort_key)
     _clean_note_entries(entries)
@@ -230,7 +235,11 @@ def _note_view_roots(coral_dir: Path) -> list[Path]:
     """Per-island note roots in multi-island mode."""
     from coral.hub._island import all_view_roots
 
-    return [r for r in all_view_roots(coral_dir) if r.name.isdigit()]
+    roots = [r for r in all_view_roots(coral_dir) if r.name.isdigit()]
+    public = coral_dir / "public"
+    if (public / "notes").exists():
+        return [public, *roots]
+    return roots
 
 
 def search_notes(

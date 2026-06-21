@@ -38,6 +38,29 @@ from coral.config import CoralConfig
 from coral.workspace.project import slugify
 
 
+def _read_resume_instruction(args: argparse.Namespace) -> str | None:
+    """Return inline/file resume instructions as one prompt string."""
+    parts: list[str] = []
+    instruction = getattr(args, "instruction", None)
+    if instruction:
+        parts.append(str(instruction))
+
+    instruction_file = getattr(args, "instruction_file", None)
+    if instruction_file:
+        path = Path(instruction_file)
+        try:
+            file_text = path.read_text()
+        except OSError as exc:
+            print(f"Error reading --instruction-file {path}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if file_text.strip():
+            parts.append(file_text.strip())
+
+    if not parts:
+        return None
+    return "\n\n".join(parts)
+
+
 def _resolved_python() -> str:
     """Return the absolute path to the Python interpreter with coral installed.
 
@@ -76,6 +99,16 @@ def _build_coral_command(args: argparse.Namespace) -> list[str]:
     cmd.extend(getattr(args, "overrides", []))
     cmd.append("run.session=local")
     return cmd
+
+
+def _task_dir_for_start_config(config_path: Path) -> Path:
+    """Return the task source directory to validate for a start config path."""
+    task_dir = config_path.parent
+    if task_dir.name == ".coral":
+        config_dir_file = task_dir / "config_dir"
+        if config_dir_file.exists():
+            return Path(config_dir_file.read_text().strip()).expanduser().resolve()
+    return task_dir
 
 
 def _start_in_tmux(args: argparse.Namespace, config: CoralConfig) -> None:
@@ -325,10 +358,13 @@ def _resume_in_tmux(args: argparse.Namespace, config: CoralConfig, coral_dir: Pa
         cmd.extend(["--run", args.run])
     else:
         cmd.extend(["--run", run_name])
-    # Forward --instruction flag if provided
+    # Forward resume instruction flags if provided.
     instruction = getattr(args, "instruction", None)
     if instruction:
         cmd.extend(["--instruction", instruction])
+    instruction_file = getattr(args, "instruction_file", None)
+    if instruction_file:
+        cmd.extend(["--instruction-file", instruction_file])
     # Forward user overrides, then force local (inner process is already in tmux)
     cmd.extend(getattr(args, "overrides", []))
     cmd.append("run.session=local")
@@ -400,7 +436,7 @@ def cmd_start(args: argparse.Namespace) -> None:
     verbose = config.run.verbose
     setup_logging(verbose=verbose)
 
-    task_dir = config_path.parent
+    task_dir = _task_dir_for_start_config(config_path)
     config.task_dir = task_dir
     errors = validate_task(task_dir)
     if errors:
@@ -519,6 +555,14 @@ def _resume_in_docker(args: argparse.Namespace, config: CoralConfig, coral_dir: 
     instruction = getattr(args, "instruction", None)
     if instruction:
         docker_cmd.extend(["--instruction", instruction])
+    instruction_file = getattr(args, "instruction_file", None)
+    if instruction_file:
+        file_path = Path(instruction_file)
+        try:
+            mapped_path = "/app/run/" + str(file_path.resolve().relative_to(host_run_dir.resolve()))
+        except ValueError:
+            mapped_path = str(file_path)
+        docker_cmd.extend(["--instruction-file", mapped_path])
     docker_cmd.extend(getattr(args, "overrides", []))
 
     _run_docker_container(docker_cmd, container_name)
@@ -627,7 +671,7 @@ def cmd_resume(args: argparse.Namespace) -> None:
         print(f"[coral] Task:    {config.task.name}")
         print(f"[coral] Model:   {config.agents.model}")
 
-    instruction = getattr(args, "instruction", None)
+    instruction = _read_resume_instruction(args)
     manager = AgentManager(config, verbose=verbose)
     handles = manager.resume_all(paths, instruction=instruction)
 

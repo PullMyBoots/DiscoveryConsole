@@ -72,18 +72,27 @@ class FileWatcher:
 
         # Logs: per-file sizes
         log_sizes: dict[str, int] = {}
+        progress_mtimes: dict[str, float] = {}
         is_multi = (self.coral_dir / "islands").exists()
         for view_root in all_view_roots(self.coral_dir):
             logs_dir = view_root / "logs"
-            if not logs_dir.exists():
-                continue
-            for lf in logs_dir.glob("*.log"):
-                key = f"{view_root.name}/{lf.name}" if is_multi else lf.name
-                log_sizes[key] = lf.stat().st_size
+            if logs_dir.exists():
+                for lf in logs_dir.glob("*.log"):
+                    key = f"{view_root.name}/{lf.name}" if is_multi else lf.name
+                    log_sizes[key] = lf.stat().st_size
+            eval_logs_dir = view_root / "eval_logs"
+            if eval_logs_dir.exists():
+                for pf in eval_logs_dir.glob("*/progress.jsonl"):
+                    key = f"{view_root.name}/{pf.parent.name}" if is_multi else pf.parent.name
+                    progress_mtimes[key] = pf.stat().st_mtime
         state["log_sizes"] = log_sizes
+        state["progress_mtimes"] = progress_mtimes
 
         # Eval count
         state["eval_count"] = read_eval_count(self.coral_dir)
+
+        run_state = self.coral_dir / "public" / "run_state.json"
+        state["run_state_mtime"] = run_state.stat().st_mtime if run_state.exists() else 0
 
         return state
 
@@ -137,11 +146,29 @@ class FileWatcher:
                         }
                     )
 
+            old_progress = self._state.get("progress_mtimes", {})
+            for name, mtime in new_state["progress_mtimes"].items():
+                if mtime > old_progress.get(name, 0):
+                    self._broadcast(
+                        {
+                            "event": "eval:progress",
+                            "data": {"job": name, "mtime": mtime},
+                        }
+                    )
+
             if new_state["eval_count"] != self._state.get("eval_count", 0):
                 self._broadcast(
                     {
                         "event": "eval:update",
                         "data": {"count": new_state["eval_count"]},
+                    }
+                )
+
+            if new_state["run_state_mtime"] > self._state.get("run_state_mtime", 0):
+                self._broadcast(
+                    {
+                        "event": "run:update",
+                        "data": {"mtime": new_state["run_state_mtime"]},
                     }
                 )
 

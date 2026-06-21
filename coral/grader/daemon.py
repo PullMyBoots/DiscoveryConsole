@@ -25,12 +25,13 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from coral.config import CoralConfig
+from coral.config import CoralConfig, ResourceConfig
 from coral.grader.loader import load_grader
 from coral.hub.attempts import (
     get_agent_attempts,
@@ -65,6 +66,7 @@ def _run_grader(
     codebase_path: str,
     tasks: list,
     island_id: str | int | None = None,
+    resource_override: ResourceConfig | None = None,
 ) -> Any:
     """Resolve the entrypoint grader and run one grade() call.
 
@@ -83,6 +85,8 @@ def _run_grader(
     if island_id is not None:
         grade_kwargs["island_id"] = island_id
     grader = load_grader(config, coral_dir=coral_dir)
+    if resource_override is not None:
+        grader._resource_override = resource_override
     return asyncio.run(grader.grade(codebase_path, tasks, **grade_kwargs))
 
 
@@ -228,6 +232,209 @@ def _attempt_island_id(attempt: Attempt) -> str | None:
     if island_id is None:
         return None
     return str(island_id)
+
+
+def _resource_env(config: CoralConfig) -> dict[str, str]:
+    """Return selected eval resource env with profile overrides applied."""
+    return _effective_eval_resources(config).to_env()
+
+
+def _effective_eval_resources(config: CoralConfig) -> ResourceConfig:
+    """Return selected per-job eval resource demand with profile overrides."""
+    base = config.grader.resources
+    profile = config.grader.profiles.get(config.grader.profile)
+    if profile is not None and profile.resources.active():
+        override = profile.resources
+        return ResourceConfig(
+            cpu_cores=override.cpu_cores or base.cpu_cores,
+            memory_gb=override.memory_gb or base.memory_gb,
+            gpu_count=override.gpu_count or base.gpu_count,
+            gpu_ids=override.gpu_ids or base.gpu_ids,
+        )
+    return base
+
+
+@dataclass
+class _ResourceLease:
+    resource: ResourceConfig
+    env: dict[str, str]
+    cpu_cores: int = 0
+    memory_gb: float = 0.0
+    gpu_ids: tuple[str, ...] = ()
+    oversubscribed: bool = False
+
+
+class _ResourceScheduler:
+    """Small first-fit scheduler for evaluator resource budgets."""
+
+    def __init__(self, *, max_workers: int, pool: ResourceConfig, per_job: ResourceConfig) -> None:
+        self.max_workers = max(max_workers, 1)
+        self.pool = pool
+        self.per_job = per_job
+        self.running = 0
+        self.used_cpu = 0
+        self.used_memory = 0.0
+        self.gpu_id_pool = self._gpu_id_pool(pool)
+        self.free_gpu_ids = list(self.gpu_id_pool)
+
+    @property
+    def active(self) -> bool:
+        return self.pool.active()
+
+    def can_start_more(self) -> bool:
+        return self.running < self.max_workers
+
+    def try_acquire(self) -> _ResourceLease | None:
+        if not self.can_start_more():
+            return None
+        cpu = self.per_job.cpu_cores
+        memory = self.per_job.memory_gb
+        gpu_count = self._required_gpu_count()
+
+        oversubscribed = False
+        if self.pool.cpu_cores > 0 and cpu > 0 and self.used_cpu + cpu > self.pool.cpu_cores:
+            if self.running > 0:
+                return None
+            oversubscribed = True
+        if self.pool.memory_gb > 0 and memory > 0 and self.used_memory + memory > self.pool.memory_gb:
+            if self.running > 0:
+                return None
+            oversubscribed = True
+
+        assigned_gpus: tuple[str, ...] = ()
+        if gpu_count > 0:
+            if self.per_job.gpu_ids:
+                assigned_gpus = tuple(self.per_job.gpu_ids)
+                if self.free_gpu_ids:
+                    if not set(assigned_gpus).issubset(set(self.free_gpu_ids)):
+                        if self.running > 0:
+                            return None
+                        oversubscribed = True
+                    else:
+                        self.free_gpu_ids = [
+                            gpu_id for gpu_id in self.free_gpu_ids if gpu_id not in assigned_gpus
+                        ]
+            elif self.free_gpu_ids:
+                if len(self.free_gpu_ids) < gpu_count:
+                    if self.running > 0:
+                        return None
+                    oversubscribed = True
+                assigned_gpus = tuple(self.free_gpu_ids[:gpu_count])
+                self.free_gpu_ids = self.free_gpu_ids[len(assigned_gpus) :]
+            elif self.pool.gpu_count > 0:
+                if self.running > 0:
+                    return None
+                oversubscribed = gpu_count > self.pool.gpu_count
+
+        self.running += 1
+        if self.pool.cpu_cores > 0 and cpu > 0:
+            self.used_cpu += cpu
+        if self.pool.memory_gb > 0 and memory > 0:
+            self.used_memory += memory
+        resource = self._lease_resource(assigned_gpus)
+        return _ResourceLease(
+            resource=resource,
+            env=resource.to_env(),
+            cpu_cores=cpu if self.pool.cpu_cores > 0 else 0,
+            memory_gb=memory if self.pool.memory_gb > 0 else 0.0,
+            gpu_ids=assigned_gpus,
+            oversubscribed=oversubscribed,
+        )
+
+    def release(self, lease: _ResourceLease) -> None:
+        self.running = max(0, self.running - 1)
+        if lease.cpu_cores:
+            self.used_cpu = max(0, self.used_cpu - lease.cpu_cores)
+        if lease.memory_gb:
+            self.used_memory = max(0.0, self.used_memory - lease.memory_gb)
+        if lease.gpu_ids and self.gpu_id_pool:
+            self.free_gpu_ids.extend(lease.gpu_ids)
+            order = {gpu_id: index for index, gpu_id in enumerate(self.gpu_id_pool)}
+            self.free_gpu_ids = sorted(set(self.free_gpu_ids), key=lambda gpu_id: order.get(gpu_id, 9999))
+
+    def _required_gpu_count(self) -> int:
+        if self.per_job.gpu_count > 0:
+            return self.per_job.gpu_count
+        return len(self.per_job.gpu_ids)
+
+    def _lease_resource(self, assigned_gpus: tuple[str, ...]) -> ResourceConfig:
+        return ResourceConfig(
+            cpu_cores=self.per_job.cpu_cores,
+            memory_gb=self.per_job.memory_gb,
+            gpu_count=len(assigned_gpus) if assigned_gpus else self.per_job.gpu_count,
+            gpu_ids=list(assigned_gpus) if assigned_gpus else list(self.per_job.gpu_ids),
+        )
+
+    @staticmethod
+    def _gpu_id_pool(pool: ResourceConfig) -> list[str]:
+        if pool.gpu_ids:
+            return list(pool.gpu_ids)
+        if pool.gpu_count > 0:
+            return [str(index) for index in range(pool.gpu_count)]
+        return []
+
+
+def _resource_scheduler(config: CoralConfig, *, max_workers: int) -> _ResourceScheduler | None:
+    pool = config.grader.parallel.resources
+    if not pool.active():
+        return None
+    return _ResourceScheduler(
+        max_workers=max_workers,
+        pool=pool,
+        per_job=_effective_eval_resources(config),
+    )
+
+
+def planned_evaluating_hashes(
+    pending: list[Attempt],
+    config: CoralConfig,
+    *,
+    max_workers: int | None = None,
+) -> set[str]:
+    """Return the pending attempts that would start in the first scheduler wave."""
+    worker_count = max_workers or config.grader.parallel.max_workers
+    scheduler = _resource_scheduler(config, max_workers=worker_count)
+    if scheduler is None:
+        return {attempt.commit_hash for attempt in pending[:worker_count]}
+    hashes: set[str] = set()
+    for attempt in pending:
+        lease = scheduler.try_acquire()
+        if lease is None:
+            continue
+        hashes.add(attempt.commit_hash)
+        if not scheduler.can_start_more():
+            break
+    return hashes
+
+
+def _select_pending_wave(
+    pending: list[Attempt],
+    config: CoralConfig,
+    *,
+    max_workers: int,
+) -> list[Attempt]:
+    """Return the attempts to launch under the current daemon config.
+
+    The long-running daemon reloads config between waves, so it should not
+    submit every pending attempt to a thread pool with stale profile/resource
+    settings. One-shot callers can still pass the full pending list directly
+    to `_drain_pending`.
+    """
+    if not pending:
+        return []
+    scheduler = _resource_scheduler(config, max_workers=max_workers)
+    if scheduler is None:
+        return pending[:max_workers]
+
+    wave: list[Attempt] = []
+    for attempt in pending:
+        lease = scheduler.try_acquire()
+        if lease is None:
+            continue
+        wave.append(attempt)
+        if not scheduler.can_start_more():
+            break
+    return wave
 
 
 def _read_attempt_file(path: Path) -> Attempt | None:
@@ -411,9 +618,11 @@ def _grade_one(
     config_path: Path,
     coral_dir: Path,
     config: CoralConfig,
+    resource_override: ResourceConfig | None = None,
 ) -> Attempt:
     """Grade a single pending attempt and return the finalized Attempt record."""
     grading_island_id = _attempt_island_id(attempt)
+    resource_env = resource_override.to_env() if resource_override is not None else _resource_env(config)
     # Task.metadata is the canonical channel for surfacing per-attempt context
     # to the user's grader (read via TaskGrader.tune / .budget_class).
     # Final budget_class may flip to "grader_error" below.
@@ -426,6 +635,9 @@ def _grade_one(
             "budget_class": budget_class,
             "agent_id": attempt.agent_id,
             "commit_hash": attempt.commit_hash,
+            "eval_version": config.grader.eval_version,
+            "eval_profile": config.grader.profile,
+            "resources": resource_env,
         },
     )
     timeout = config.grader.timeout
@@ -448,10 +660,15 @@ def _grade_one(
                 str(checkout_path),
                 [task],
                 island_id=grading_island_id,
+                resource_override=resource_override,
             )
             score = bundle.aggregated
             feedback = _build_feedback(bundle)
             metadata = dict(getattr(bundle, "metadata", None) or {})
+            score_components = _score_components_from_bundle(bundle)
+            if score_components:
+                metadata.setdefault("score_components", score_components)
+            metadata.setdefault("aggregated_score", score)
             grader_completed = True
         finally:
             _remove_worktree(repo_dir, checkout_path)
@@ -501,6 +718,9 @@ def _grade_one(
         metadata.setdefault(k, v)
     if final_island_id is not None:
         metadata["island_id"] = final_island_id
+    metadata.setdefault("eval_version", config.grader.eval_version)
+    metadata.setdefault("eval_profile", config.grader.profile)
+    metadata.setdefault("resources", resource_env)
     metadata["budget_class"] = budget_class
 
     finalized = Attempt(
@@ -528,6 +748,29 @@ def _grade_one(
         status,
     )
     return finalized
+
+
+def _score_components_from_bundle(bundle: Any) -> dict[str, dict[str, Any]]:
+    """Return JSON-friendly per-score details from a ScoreBundle-like object."""
+    scores = getattr(bundle, "scores", None)
+    if not isinstance(scores, dict):
+        return {}
+
+    components: dict[str, dict[str, Any]] = {}
+    for name, score in scores.items():
+        key = str(name)
+        if hasattr(score, "to_dict"):
+            value = score.to_dict()
+            if isinstance(value, dict):
+                components[key] = value
+                continue
+        components[key] = {
+            "value": getattr(score, "value", None),
+            "name": getattr(score, "name", key),
+            "explanation": getattr(score, "explanation", None),
+            "metadata": dict(getattr(score, "metadata", {}) or {}),
+        }
+    return components
 
 
 # --------------------------------------------------------------------------- #
@@ -564,6 +807,7 @@ def _safe_grade_one(
     config_path: Path,
     coral_dir: Path,
     config: CoralConfig,
+    resource_override: ResourceConfig | None = None,
 ) -> Attempt | None:
     """Grade an attempt, swallowing truly unexpected errors as `crashed`.
 
@@ -574,7 +818,7 @@ def _safe_grade_one(
     failed.
     """
     try:
-        return _grade_one(attempt, config_path, coral_dir, config)
+        return _grade_one(attempt, config_path, coral_dir, config, resource_override)
     except Exception:
         logger.exception("Unhandled error grading %s; marking crashed", attempt.commit_hash[:12])
         try:
@@ -594,6 +838,11 @@ def _safe_grade_one(
             metadata = dict(base_attempt.metadata or {})
             if final_island_id is not None:
                 metadata["island_id"] = final_island_id
+            config = CoralConfig.from_yaml(coral_dir / "config.yaml")
+            resource_env = (
+                resource_override.to_env() if resource_override is not None else _resource_env(config)
+            )
+            metadata.setdefault("resources", resource_env)
             metadata["budget_class"] = BUDGET_CLASS_GRADER_ERROR
             crashed = Attempt(
                 commit_hash=base_attempt.commit_hash,
@@ -642,6 +891,18 @@ def _drain_pending(
     if not pending:
         return finalized
 
+    scheduler = _resource_scheduler(config, max_workers=max_workers)
+    if scheduler is not None:
+        return _drain_pending_with_resource_scheduler(
+            pending,
+            config_path,
+            coral_dir,
+            config,
+            scheduler=scheduler,
+            heartbeat_file=heartbeat_file,
+            should_stop=should_stop,
+        )
+
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
             pool.submit(_safe_grade_one, attempt, config_path, coral_dir, config): attempt
@@ -669,6 +930,76 @@ def _drain_pending(
     return finalized
 
 
+def _drain_pending_with_resource_scheduler(
+    pending: list[Attempt],
+    config_path: Path,
+    coral_dir: Path,
+    config: CoralConfig,
+    *,
+    scheduler: _ResourceScheduler,
+    heartbeat_file: Path | None = None,
+    should_stop: Callable[[], bool] = lambda: False,
+) -> list[Attempt]:
+    """Drain pending attempts while respecting evaluator resource capacity."""
+    finalized: list[Attempt] = []
+    queue = list(pending)
+    running: dict[Any, tuple[Attempt, _ResourceLease]] = {}
+
+    def _heartbeat() -> None:
+        if heartbeat_file is not None:
+            try:
+                heartbeat_file.write_text(datetime.now(UTC).isoformat())
+            except OSError:
+                pass
+
+    def _schedule_ready(pool: ThreadPoolExecutor) -> None:
+        made_progress = True
+        while queue and made_progress and not should_stop():
+            made_progress = False
+            for attempt in list(queue):
+                lease = scheduler.try_acquire()
+                if lease is None:
+                    continue
+                if lease.oversubscribed:
+                    logger.warning(
+                        "Eval %s exceeds configured grader.parallel.resources; running it alone",
+                        attempt.commit_hash[:12],
+                    )
+                future = pool.submit(
+                    _safe_grade_one,
+                    attempt,
+                    config_path,
+                    coral_dir,
+                    config,
+                    lease.resource,
+                )
+                running[future] = (attempt, lease)
+                queue.remove(attempt)
+                made_progress = True
+                if not scheduler.can_start_more():
+                    return
+
+    with ThreadPoolExecutor(max_workers=scheduler.max_workers) as pool:
+        _schedule_ready(pool)
+        while running:
+            done, _not_done = wait(running.keys(), return_when=FIRST_COMPLETED)
+            for future in done:
+                _attempt, lease = running.pop(future)
+                try:
+                    result = future.result()
+                    if result is not None:
+                        finalized.append(result)
+                finally:
+                    scheduler.release(lease)
+                    _heartbeat()
+            if should_stop():
+                for future in running:
+                    future.cancel()
+                break
+            _schedule_ready(pool)
+    return finalized
+
+
 def process_pending_once(coral_dir: str | Path) -> list[Attempt]:
     """Drain all currently-pending attempts synchronously and return finalized records.
 
@@ -685,6 +1016,22 @@ def process_pending_once(coral_dir: str | Path) -> list[Attempt]:
         config,
         max_workers=config.grader.parallel.max_workers,
     )
+
+
+def _reload_daemon_config(config_path: Path, current: CoralConfig) -> CoralConfig:
+    """Best-effort live config reload for user-facing evaluator knobs.
+
+    The control panel can change eval profile, worker count, and resource
+    budgets while the manager is running. Reloading before each drain lets the
+    daemon apply those changes to future evals without restarting. If the file
+    is momentarily unreadable or invalid, keep the prior config so in-flight
+    runs are not killed by a transient write/read race.
+    """
+    try:
+        return CoralConfig.from_yaml(config_path)
+    except Exception as exc:  # noqa: BLE001 - daemon must survive transient config writes
+        logger.warning("Failed to reload grader config from %s; keeping previous: %s", config_path, exc)
+        return current
 
 
 def run_daemon(coral_dir: str | Path, stop_event: Any = None) -> None:
@@ -716,6 +1063,9 @@ def run_daemon(coral_dir: str | Path, stop_event: Any = None) -> None:
         return bool(stop_event and stop_event.is_set())
 
     while not _should_stop():
+        config = _reload_daemon_config(config_path, config)
+        max_workers = config.grader.parallel.max_workers
+
         try:
             pending = _find_pending(coral_dir)
         except Exception:
@@ -731,8 +1081,17 @@ def run_daemon(coral_dir: str | Path, stop_event: Any = None) -> None:
             time.sleep(_POLL_INTERVAL_SEC)
             continue
 
+        wave = _select_pending_wave(pending, config, max_workers=max_workers)
+        if not wave:
+            try:
+                heartbeat_file.write_text(datetime.now(UTC).isoformat())
+            except OSError:
+                pass
+            time.sleep(_POLL_INTERVAL_SEC)
+            continue
+
         _drain_pending(
-            pending,
+            wave,
             config_path,
             coral_dir,
             config,

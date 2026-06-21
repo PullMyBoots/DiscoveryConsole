@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type RunsResponse } from "../lib/api";
 
-export default function RunSelector() {
+export default function RunSelector({ managerAlive = false }: { managerAlive?: boolean }) {
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<RunsResponse | null>(null);
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
   const [switching, setSwitching] = useState(false);
+  const [notice, setNotice] = useState("");
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -37,6 +38,23 @@ export default function RunSelector() {
       await api.switchRun(task, run);
       window.location.reload();
     } catch {
+      setSwitching(false);
+    }
+  };
+
+  const handleCreate = async () => {
+    if (managerAlive) {
+      setNotice("Pause the current run before creating a new timestamp.");
+      return;
+    }
+    setSwitching(true);
+    setNotice("");
+    try {
+      const created = await api.createRun();
+      await api.switchRun(created.task, created.run);
+      window.location.reload();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Failed to create timestamp.");
       setSwitching(false);
     }
   };
@@ -89,8 +107,8 @@ export default function RunSelector() {
                     title={t.slug}
                     className={`w-full text-left px-3 py-2 font-mono text-[10px] tracking-wider uppercase truncate border-b border-border last:border-b-0 transition-colors duration-100 ${
                       selectedTask === t.slug
-                        ? "bg-foreground text-background"
-                        : "text-muted-fg hover:text-foreground hover:bg-muted"
+                        ? "bg-accent text-white"
+                        : "text-muted-fg hover:text-foreground hover:bg-surface-muted"
                     }`}
                   >
                     {t.slug}
@@ -118,6 +136,19 @@ export default function RunSelector() {
                 switching={switching}
                 onSwitch={handleSwitch}
               />
+            </div>
+          )}
+          <button
+            onClick={handleCreate}
+            disabled={switching || managerAlive}
+            title={managerAlive ? "Pause the current run before creating a new timestamp" : "Create a clean timestamp from this run"}
+            className="w-full border-t border-border px-3 py-2 text-left font-mono text-[10px] uppercase tracking-widest text-muted-fg transition-colors duration-100 hover:bg-muted hover:text-foreground disabled:opacity-50"
+          >
+            {managerAlive ? "Pause before new timestamp" : "New timestamp"}
+          </button>
+          {notice && (
+            <div className="border-t border-border bg-muted/40 px-3 py-2 font-mono text-[10px] text-muted-fg">
+              {notice}
             </div>
           )}
         </div>
@@ -158,12 +189,12 @@ function RunList({
             onClick={() => onSwitch(task.slug, run.timestamp)}
             disabled={switching}
             className={`w-full text-left px-3 py-2 flex items-center gap-2 transition-colors duration-100 border-b border-border last:border-b-0 ${
-              isCurrent ? "bg-foreground/5" : "hover:bg-muted/50"
+              isCurrent ? "bg-accent-soft/55" : "hover:bg-surface-muted/70"
             }`}
           >
             <span
               className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                run.status === "running" ? "bg-green-500" : "bg-border-strong"
+                run.status === "running" ? "bg-success" : "bg-border-strong"
               }`}
             />
             <span className="font-mono text-[11px] flex-1">
@@ -178,7 +209,7 @@ function RunList({
               </span>
             )}
             {isCurrent && (
-              <span className="font-mono text-[9px] text-background bg-foreground px-1 py-0.5 rounded">
+              <span className="font-mono text-[9px] text-white bg-accent px-1 py-0.5 rounded">
                 current
               </span>
             )}

@@ -23,15 +23,76 @@ class TaskConfig:
 class ParallelGraderConfig:
     """Parallel evaluation in the grader daemon.
 
-    The daemon always routes pending attempts through a worker pool of this
-    size. ``max_workers=1`` (the default) is serial — same behavior as before
-    the pool existed. Set higher only when the grader is concurrency-safe
-    (pure Python, sandboxed swebench runs, etc.); the daemon does not enforce
-    safety, so a misconfigured value with a non-safe grader is the user's
-    responsibility.
+    ``max_workers=1`` (the default) is serial. ``resources`` is the optional
+    total evaluator resource pool; when set, the daemon schedules pending jobs
+    only while both ``max_workers`` and this pool have capacity. Per-job demand
+    still comes from ``grader.resources`` plus selected profile overrides.
     """
 
     max_workers: int = 1
+    resources: ResourceConfig = field(default_factory=lambda: ResourceConfig())
+
+    def __post_init__(self) -> None:
+        if isinstance(self.resources, dict):
+            self.resources = ResourceConfig(**self.resources)
+
+
+@dataclass
+class ResourceConfig:
+    """Resource budget hints for evaluation jobs.
+
+    These fields are intentionally advisory at the CORAL core level: graders
+    receive them through TaskGrader.resources and standardized environment
+    variables. A task-specific grader can enforce them with Docker, Slurm,
+    cgroups, CUDA_VISIBLE_DEVICES, or its own scheduler.
+    """
+
+    cpu_cores: int = 0  # 0 = unspecified
+    memory_gb: float = 0.0  # 0 = unspecified
+    gpu_count: int = 0  # 0 = no/unspecified GPU budget
+    gpu_ids: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.cpu_cores < 0:
+            raise ValueError(f"resources.cpu_cores must be >= 0, got {self.cpu_cores}")
+        if self.memory_gb < 0:
+            raise ValueError(f"resources.memory_gb must be >= 0, got {self.memory_gb}")
+        if self.gpu_count < 0:
+            raise ValueError(f"resources.gpu_count must be >= 0, got {self.gpu_count}")
+        self.gpu_ids = [str(gpu_id) for gpu_id in self.gpu_ids]
+
+    def active(self) -> bool:
+        return bool(self.cpu_cores or self.memory_gb or self.gpu_count or self.gpu_ids)
+
+    def to_env(self) -> dict[str, str]:
+        env: dict[str, str] = {}
+        if self.cpu_cores > 0:
+            env["CORAL_CPU_CORES"] = str(self.cpu_cores)
+        if self.memory_gb > 0:
+            env["CORAL_MEMORY_GB"] = f"{self.memory_gb:g}"
+        if self.gpu_count > 0:
+            env["CORAL_GPU_COUNT"] = str(self.gpu_count)
+        if self.gpu_ids:
+            joined = ",".join(self.gpu_ids)
+            env["CORAL_GPU_IDS"] = joined
+            env["CUDA_VISIBLE_DEVICES"] = joined
+        return env
+
+
+@dataclass
+class GraderProfileConfig:
+    """Named eval profile used to trade off cost and confidence."""
+
+    label: str = ""
+    timeout: int = 0  # 0 = inherit grader.timeout
+    args: dict[str, Any] = field(default_factory=dict)
+    resources: ResourceConfig = field(default_factory=ResourceConfig)
+
+    def __post_init__(self) -> None:
+        if self.timeout < 0:
+            raise ValueError(f"grader.profiles[].timeout must be >= 0, got {self.timeout}")
+        if isinstance(self.resources, dict):
+            self.resources = ResourceConfig(**self.resources)
 
 
 @dataclass
@@ -50,6 +111,10 @@ class GraderConfig:
         default_factory=list
     )  # files/dirs copied to .coral/ (hidden from agents)
     direction: str = "maximize"  # "maximize" or "minimize"
+    eval_version: str = "eval_v1"
+    profile: str = "default"
+    profiles: dict[str, GraderProfileConfig] = field(default_factory=dict)
+    resources: ResourceConfig = field(default_factory=ResourceConfig)
     # Producer-side queue cap. Reject `coral eval` when an agent already has
     # this many ungraded submissions in flight. 0 = unlimited (legacy behavior).
     # Default 1: an agent can only enqueue a fresh attempt once the prior one
@@ -68,10 +133,22 @@ class GraderConfig:
         # work for both real callers and the worker reconstruction path.
         if isinstance(self.parallel, dict):
             self.parallel = ParallelGraderConfig(**self.parallel)
+        if isinstance(self.resources, dict):
+            self.resources = ResourceConfig(**self.resources)
+        self.profiles = {
+            name: profile
+            if isinstance(profile, GraderProfileConfig)
+            else GraderProfileConfig(**profile)
+            for name, profile in self.profiles.items()
+        }
         if self.parallel.max_workers < 1:
             raise ValueError(
                 f"grader.parallel.max_workers must be >= 1, got {self.parallel.max_workers}"
             )
+        if not self.eval_version:
+            raise ValueError("grader.eval_version must be non-empty")
+        if not self.profile:
+            raise ValueError("grader.profile must be non-empty")
 
 
 @dataclass
@@ -233,6 +310,21 @@ class SharingConfig:
 
 
 @dataclass
+class KnowledgeConfig:
+    """Task knowledge base copied into each run.
+
+    ``path`` is resolved relative to the task config directory. At run creation
+    time CORAL copies it into the run's snapshots/ directory and seeds the
+    active shared knowledge base from that frozen snapshot. Missing paths are
+    allowed: CORAL still creates an empty active knowledge base so agents have a
+    stable place to put papers, repos, research notes, and experiment notes.
+    """
+
+    path: str = "./knowledge"
+    snapshot: bool = True
+
+
+@dataclass
 class WorkspaceConfig:
     """Workspace layout configuration."""
 
@@ -252,6 +344,16 @@ class RunConfig:
     ui: bool = False
     session: str = "tmux"  # "local", "tmux", or "docker"
     docker_image: str = ""  # empty = auto-build from project Dockerfile
+    # Run-level wall-clock deadline in seconds. 0 = no run-level deadline.
+    # Unlike agents.max_turns, this stops the whole manager, all agents, and
+    # the grader daemon when the elapsed active runtime reaches the limit.
+    max_runtime_seconds: int = 0
+
+    def __post_init__(self) -> None:
+        if self.max_runtime_seconds < 0:
+            raise ValueError(
+                f"run.max_runtime_seconds must be >= 0, got {self.max_runtime_seconds}"
+            )
 
 
 @dataclass
@@ -321,6 +423,7 @@ class CoralConfig:
     agents: AgentConfig = field(default_factory=AgentConfig)
     islands: IslandsConfig = field(default_factory=IslandsConfig)
     sharing: SharingConfig = field(default_factory=SharingConfig)
+    knowledge: KnowledgeConfig = field(default_factory=KnowledgeConfig)
     workspace: WorkspaceConfig = field(default_factory=WorkspaceConfig)
     run: RunConfig = field(default_factory=RunConfig)
     task_dir: Path | None = None  # internal: directory containing task.yaml

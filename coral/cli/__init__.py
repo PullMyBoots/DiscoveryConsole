@@ -150,11 +150,19 @@ Run 'coral <command> --help' for details on any command."""
     p_validate = sub.add_parser(
         "validate",
         help="Test your grader against seed code",
-        description="Validate task structure and dry-run the grader against seed code.",
-        epilog="Examples:\n  coral validate my-task",
+        description="Validate task structure, or validate a prepared timestamp run directory.",
+        epilog=(
+            "Examples:\n"
+            "  coral validate my-task\n"
+            "  coral validate --run-dir results/my-task/latest/.coral"
+        ),
         formatter_class=_CommandHelpFormatter,
     )
-    p_validate.add_argument("path", help="Path to the task directory")
+    p_validate.add_argument("path", nargs="?", help="Path to the task directory")
+    p_validate.add_argument(
+        "--run-dir",
+        help="Path to a prepared timestamp .coral directory for workbench readiness checks",
+    )
     # Hidden alias: test-eval -> validate
     sub.add_parser("test-eval", help=argparse.SUPPRESS)
 
@@ -194,6 +202,12 @@ Run 'coral <command> --help' for details on any command."""
         type=str,
         default=None,
         help="Additional instruction to inject into agents at resume time",
+    )
+    p_resume.add_argument(
+        "--instruction-file",
+        type=str,
+        default=None,
+        help="Read additional resume instruction from a file",
     )
     p_resume.add_argument(
         "overrides",

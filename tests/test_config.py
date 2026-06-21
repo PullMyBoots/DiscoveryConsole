@@ -8,6 +8,9 @@ from coral.config import (
     AgentConfig,
     CoralConfig,
     GraderConfig,
+    GraderProfileConfig,
+    KnowledgeConfig,
+    ResourceConfig,
     RunConfig,
     TaskConfig,
     WarmStartConfig,
@@ -115,6 +118,94 @@ def test_config_setup_defaults_empty():
     assert config.workspace.setup == []
 
 
+def test_knowledge_config_roundtrip():
+    config = CoralConfig(
+        task=TaskConfig(name="test", description="A test"),
+        knowledge=KnowledgeConfig(path="./kb", snapshot=False),
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+        config.to_yaml(f.name)
+        restored = CoralConfig.from_yaml(f.name)
+
+    assert restored.knowledge.path == "./kb"
+    assert restored.knowledge.snapshot is False
+
+
+def test_grader_profiles_roundtrip():
+    config = CoralConfig(
+        task=TaskConfig(name="test", description="A test"),
+        grader=GraderConfig(
+            eval_version="eval_v2",
+            profile="quick",
+            timeout=900,
+            profiles={
+                "quick": GraderProfileConfig(
+                    label="Quick",
+                    timeout=120,
+                    args={"profile": "quick", "cases": 10},
+                    resources=ResourceConfig(cpu_cores=2, memory_gb=8, gpu_count=1),
+                )
+            },
+            resources=ResourceConfig(cpu_cores=1, memory_gb=4),
+        ),
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+        config.to_yaml(f.name)
+        restored = CoralConfig.from_yaml(f.name)
+
+    assert restored.grader.eval_version == "eval_v2"
+    assert restored.grader.profile == "quick"
+    assert restored.grader.profiles["quick"].timeout == 120
+    assert restored.grader.profiles["quick"].args == {"profile": "quick", "cases": 10}
+    assert restored.grader.resources.cpu_cores == 1
+    assert restored.grader.resources.memory_gb == 4
+    assert restored.grader.profiles["quick"].resources.cpu_cores == 2
+    assert restored.grader.profiles["quick"].resources.memory_gb == 8
+    assert restored.grader.profiles["quick"].resources.gpu_count == 1
+
+
+def test_grader_parallel_resource_pool_roundtrip():
+    config = CoralConfig.from_dict(
+        {
+            "task": {"name": "test", "description": "A test"},
+            "grader": {
+                "resources": {"gpu_count": 1},
+                "parallel": {
+                    "max_workers": 4,
+                    "resources": {
+                        "cpu_cores": 64,
+                        "memory_gb": 256,
+                        "gpu_count": 3,
+                        "gpu_ids": ["0", "1", "2"],
+                    },
+                },
+            },
+        }
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+        config.to_yaml(f.name)
+        restored = CoralConfig.from_yaml(f.name)
+
+    assert restored.grader.resources.gpu_count == 1
+    assert restored.grader.parallel.max_workers == 4
+    assert restored.grader.parallel.resources.cpu_cores == 64
+    assert restored.grader.parallel.resources.memory_gb == 256
+    assert restored.grader.parallel.resources.gpu_count == 3
+    assert restored.grader.parallel.resources.gpu_ids == ["0", "1", "2"]
+
+
+def test_resource_config_rejects_negative_values():
+    with pytest.raises(ValueError, match="cpu_cores"):
+        ResourceConfig(cpu_cores=-1)
+    with pytest.raises(ValueError, match="memory_gb"):
+        ResourceConfig(memory_gb=-1)
+    with pytest.raises(ValueError, match="gpu_count"):
+        ResourceConfig(gpu_count=-1)
+
+
 # --- OmegaConf-specific tests ---
 
 
@@ -198,22 +289,27 @@ def test_run_config_defaults():
     assert config.run.verbose is False
     assert config.run.ui is False
     assert config.run.session == "tmux"
+    assert config.run.max_runtime_seconds == 0
 
 
 def test_run_config_dotlist_override():
     config = CoralConfig(
         task=TaskConfig(name="t", description="d"),
     )
-    merged = CoralConfig.merge_dotlist(config, ["run.session=local", "run.verbose=true"])
+    merged = CoralConfig.merge_dotlist(
+        config,
+        ["run.session=local", "run.verbose=true", "run.max_runtime_seconds=1200"],
+    )
     assert merged.run.session == "local"
     assert merged.run.verbose is True
     assert merged.run.ui is False
+    assert merged.run.max_runtime_seconds == 1200
 
 
 def test_run_config_roundtrip():
     config = CoralConfig(
         task=TaskConfig(name="t", description="d"),
-        run=RunConfig(verbose=True, ui=True, session="docker"),
+        run=RunConfig(verbose=True, ui=True, session="docker", max_runtime_seconds=600),
     )
 
     with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
@@ -223,6 +319,12 @@ def test_run_config_roundtrip():
     assert restored.run.verbose is True
     assert restored.run.ui is True
     assert restored.run.session == "docker"
+    assert restored.run.max_runtime_seconds == 600
+
+
+def test_run_config_rejects_negative_runtime_limit():
+    with pytest.raises(ValueError, match="max_runtime_seconds"):
+        RunConfig(max_runtime_seconds=-1)
 
 
 def test_to_dict_excludes_task_dir():

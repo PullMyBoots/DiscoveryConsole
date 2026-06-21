@@ -36,6 +36,74 @@ def _distribution_name(name: str) -> str:
     return f"{cleaned}-grader"
 
 
+def _create_knowledge_skeleton(path: Path) -> None:
+    """Create the default research-workbench knowledge tree."""
+    for subdir in (
+        "sources/papers",
+        "sources/repos",
+        "sources/web",
+        "sources/docs",
+        "sources/datasets",
+        "notes/research",
+        "notes/experiments",
+        "notes/synthesis",
+        "notes/open-questions",
+        "briefs/agent-seeds",
+        "briefs/islands",
+        "briefs/island-themes",
+        "inbox",
+        "archive",
+    ):
+        (path / subdir).mkdir(parents=True, exist_ok=True)
+
+    manifest = path / "manifest.jsonl"
+    if not manifest.exists():
+        manifest.write_text("")
+    (path / "index.md").write_text(
+        "# Knowledge Index\n\n"
+        "## Start Here\n"
+        "- Add task context in `briefs/task-context.md`.\n"
+        "- Fill the eval trust design in `eval_spec.md` before launch.\n"
+        "- Add agent launch briefs in `briefs/agent-seeds/`.\n"
+        "- Add multi-island themes in `briefs/islands/` when islands are enabled.\n"
+        "- Add research summaries in `notes/research/`.\n"
+        "- Add experiment reflections in `notes/experiments/`.\n\n"
+        "## Sources\n"
+        "- Papers: `sources/papers/`\n"
+        "- Repositories: `sources/repos/`\n"
+        "- Web/docs/datasets: `sources/`\n"
+    )
+    eval_spec = path / "eval_spec.md"
+    if not eval_spec.exists():
+        eval_spec.write_text(
+            "# Eval Spec\n\n"
+            "## Breakthrough Metrics\n"
+            "- Define the metrics the run should improve.\n\n"
+            "## Guardrail Metrics\n"
+            "- Define minimum acceptable behavior and hard failure thresholds.\n\n"
+            "## Anti-Cheating and Overfitting Checks\n"
+            "- Define leakage checks, invalid-output checks, robustness cases, and "
+            "held-out or stress evaluation.\n\n"
+            "## Scalar Score\n"
+            "- Define how breakthrough and guardrail metrics become the single "
+            "CORAL scheduling score.\n\n"
+            "## Eval Profiles\n"
+            "- quick:\n"
+            "- medium:\n"
+            "- full:\n"
+            "- stress:\n"
+        )
+    (path / "notes" / "index.md").write_text(
+        "# Notes Index\n\n"
+        "## Research\n"
+        "- (none yet)\n\n"
+        "## Experiments\n"
+        "- (none yet)\n\n"
+        "## Open Questions\n"
+        "- (none yet)\n"
+    )
+
+
 def cmd_init(args: argparse.Namespace) -> None:
     """Create a new task directory with a packaged grader.
 
@@ -54,6 +122,7 @@ def cmd_init(args: argparse.Namespace) -> None:
 
     task_path.mkdir(parents=True, exist_ok=True)
     (task_path / "seed").mkdir()
+    _create_knowledge_skeleton(task_path / "knowledge")
     grader_pkg_dir = task_path / "grader" / "src" / module_name
     grader_pkg_dir.mkdir(parents=True)
 
@@ -71,6 +140,32 @@ def cmd_init(args: argparse.Namespace) -> None:
         f'    - "uv pip install -e ./grader"\n'
         f"  timeout: 300\n"
         f"  direction: maximize          # or 'minimize'\n"
+        f"  eval_version: eval_v1\n"
+        f"  profile: quick\n"
+        f"  profiles:\n"
+        f"    quick:\n"
+        f"      label: Quick iteration\n"
+        f"      timeout: 300\n"
+        f"      resources:\n"
+        f"        cpu_cores: 0\n"
+        f"        memory_gb: 0\n"
+        f"        gpu_count: 0\n"
+        f"      args:\n"
+        f"        profile: quick\n"
+        f"    full:\n"
+        f"      label: Full validation\n"
+        f"      timeout: 1200\n"
+        f"      resources:\n"
+        f"        cpu_cores: 0\n"
+        f"        memory_gb: 0\n"
+        f"        gpu_count: 0\n"
+        f"      args:\n"
+        f"        profile: full\n"
+        f"  resources:\n"
+        f"    cpu_cores: 0              # 0 = unspecified\n"
+        f"    memory_gb: 0              # 0 = unspecified\n"
+        f"    gpu_count: 0              # 0 = no/unspecified GPU budget\n"
+        f"    gpu_ids: []               # e.g. ['0', '1']; sets CUDA_VISIBLE_DEVICES\n"
         f"  args:\n"
         f'    program_file: "solution.py"\n'
         f"\n"
@@ -78,8 +173,15 @@ def cmd_init(args: argparse.Namespace) -> None:
         f"  count: 1\n"
         f"  runtime: claude_code         # claude_code | codex | cursor | kiro | opencode | 'pkg.module:Cls' for a custom runtime\n"
         f"\n"
+        f"knowledge:\n"
+        f'  path: "./knowledge"          # copied into each timestamp snapshot\n'
+        f"  snapshot: true\n"
+        f"\n"
         f"workspace:\n"
         f'  repo_path: "./seed"          # relative to where you run `coral start`\n'
+        f"\n"
+        f"run:\n"
+        f"  max_runtime_seconds: 0      # 0 = no run-level wall-clock deadline\n"
     )
 
     (task_path / "seed" / "solution.py").write_text(
@@ -135,6 +237,8 @@ def cmd_init(args: argparse.Namespace) -> None:
         f"        #\n"
         f"        # Return a float, or use self.score(value, explanation=...)\n"
         f"        # or self.fail(reason) to record a failure with feedback.\n"
+        f'        profile = self.args.get("profile", self.profile)\n'
+        f'        self.report_progress(current=0, total=1, phase=profile, message="running seed program")\n'
         f'        program_file = self.args.get("program_file", "solution.py")\n'
         f"        result = self.run_program(program_file)\n"
         f"\n"
@@ -150,6 +254,7 @@ def cmd_init(args: argparse.Namespace) -> None:
     print(f"Created task at {task_path}/")
     print("  task.yaml                 — task config + grader entrypoint")
     print("  seed/solution.py          — baseline the agent will iterate on")
+    print("  knowledge/                — papers, repos, notes, briefs, and sources")
     print(f"  grader/                   — packaged grader ({dist_name})")
     print(f"  grader/src/{module_name}/grader.py")
     print("\nNext:")
@@ -163,12 +268,23 @@ def cmd_validate(args: argparse.Namespace) -> None:
 
     Examples:
       coral validate my-task        Dry-run the grader in my-task/
+      coral validate --run-dir .coral
+                                    Check prepared timestamp readiness.
     """
     import shutil
     import tempfile
 
     from coral.cli.validation import validate_task
     from coral.config import CoralConfig
+
+    run_dir_arg = getattr(args, "run_dir", None)
+    if run_dir_arg:
+        _cmd_validate_run_dir(Path(run_dir_arg).expanduser().resolve())
+        return
+
+    if not getattr(args, "path", None):
+        print("Error: provide a task path or --run-dir", file=sys.stderr)
+        sys.exit(2)
 
     task_dir = Path(args.path).resolve()
 
@@ -256,3 +372,36 @@ def cmd_validate(args: argparse.Namespace) -> None:
         except Exception as e:
             print(f"\nGrader crashed: {e}", file=sys.stderr)
             sys.exit(1)
+
+
+def _cmd_validate_run_dir(coral_dir: Path) -> None:
+    """Validate a prepared timestamp .coral directory for workbench launch."""
+    from coral.hub.readiness import build_control_readiness
+
+    if coral_dir.name != ".coral":
+        candidate = coral_dir / ".coral"
+        if candidate.is_dir():
+            coral_dir = candidate
+    if not coral_dir.is_dir():
+        print(f"Error: run directory not found: {coral_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    readiness = build_control_readiness(coral_dir)
+    status = str(readiness.get("status") or "missing")
+    print(f"Readiness: {status.upper()}")
+    for check in readiness.get("checks", []):
+        check_status = str(check.get("status") or "missing").upper()
+        label = str(check.get("label") or check.get("id") or "check")
+        detail = str(check.get("detail") or "")
+        print(f"  [{check_status}] {label}: {detail}")
+        path = check.get("path")
+        if path:
+            print(f"      {path}")
+
+    if status == "missing":
+        print("\nRun readiness is missing required Codex-prepared artifacts.", file=sys.stderr)
+        sys.exit(1)
+    if status == "warning":
+        print("\nRun readiness has warnings; review before launching.")
+    else:
+        print("\nRun readiness: OK")

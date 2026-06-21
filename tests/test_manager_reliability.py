@@ -22,6 +22,7 @@ from coral.agent.exit_classifier import (
     classify_by_uptime,
     claude_code_has_result,
 )
+from coral.agent.manager import AgentManager
 from coral.agent.state import (
     AGENT_STATE_SCHEMA_VERSION,
     AgentRuntimeState,
@@ -31,9 +32,10 @@ from coral.agent.state import (
     state_file_path,
     write_agent_state,
 )
-from coral.config import AgentConfig
+from coral.config import AgentConfig, CoralConfig
 from coral.hub.attempts import agent_in_grader_queue, write_attempt
 from coral.types import Attempt
+from coral.workspace import ProjectPaths
 
 # ---------------------------------------------------------------------------
 # classify_by_uptime — markerless runtime fallback
@@ -178,6 +180,185 @@ def test_agent_config_zero_window_or_pause_is_allowed_disabled() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Run deadline state
+# ---------------------------------------------------------------------------
+
+
+def _deadline_manager(tmp_path: Path, max_runtime_seconds: int) -> AgentManager:
+    coral_dir = tmp_path / ".coral"
+    (coral_dir / "public").mkdir(parents=True)
+    cfg = CoralConfig.from_dict(
+        {
+            "task": {"name": "t", "description": "d"},
+            "run": {"max_runtime_seconds": max_runtime_seconds},
+        }
+    )
+    mgr = AgentManager(cfg)
+    mgr.paths = ProjectPaths(
+        results_dir=tmp_path / "results",
+        task_dir=tmp_path,
+        run_dir=tmp_path,
+        snapshots_dir=tmp_path / "snapshots",
+        coral_dir=coral_dir,
+        agents_dir=tmp_path / "agents",
+        repo_dir=tmp_path / "repo",
+    )
+    mgr._runtime_start_epoch = time.time()
+    return mgr
+
+
+def test_run_deadline_state_records_limit_and_deadline(tmp_path: Path) -> None:
+    mgr = _deadline_manager(tmp_path, max_runtime_seconds=120)
+
+    mgr._refresh_runtime_deadline(force=True, status="running")
+
+    state = json.loads((tmp_path / ".coral" / "public" / "run_state.json").read_text())
+    assert state["status"] == "running"
+    assert state["max_runtime_seconds"] == 120
+    assert state["deadline_at"] is not None
+    assert state["remaining_seconds"] > 100
+
+
+def test_run_deadline_can_be_extended_from_saved_config(tmp_path: Path) -> None:
+    mgr = _deadline_manager(tmp_path, max_runtime_seconds=60)
+    mgr._runtime_start_epoch = time.time() - 10
+    (tmp_path / ".coral" / "config.yaml").write_text(
+        "task:\n  name: t\n  description: d\nrun:\n  max_runtime_seconds: 180\n"
+    )
+
+    mgr._refresh_runtime_deadline(force=True, status="running")
+
+    state = json.loads((tmp_path / ".coral" / "public" / "run_state.json").read_text())
+    assert state["max_runtime_seconds"] == 180
+    assert 160 <= state["remaining_seconds"] <= 180
+
+
+def test_run_deadline_stops_all_when_expired(tmp_path: Path) -> None:
+    mgr = _deadline_manager(tmp_path, max_runtime_seconds=1)
+    mgr._runtime_start_epoch = time.time() - 5
+    called: list[str] = []
+
+    def fake_stop_all(*, reason: str = "manual") -> None:
+        called.append(reason)
+        mgr._running = False
+        mgr._write_run_state(status="stopped", stopped_reason=reason)
+
+    mgr.stop_all = fake_stop_all  # type: ignore[method-assign]
+
+    assert mgr._maybe_stop_for_deadline() is True
+    assert called == ["deadline"]
+    state = json.loads((tmp_path / ".coral" / "public" / "run_state.json").read_text())
+    assert state["status"] == "stopped"
+    assert state["stopped_reason"] == "deadline"
+
+
+class _FakeAgentHandle:
+    def __init__(self, agent_id: str, *, alive: bool = True) -> None:
+        self.agent_id = agent_id
+        self._alive = alive
+        self.process = None
+        self.session_id = None
+        self.log_path = Path("/tmp/fake-agent.log")
+        self.interrupted = False
+        self.stopped = False
+
+    @property
+    def alive(self) -> bool:
+        return self._alive
+
+    def interrupt(self) -> None:
+        self.interrupted = True
+        self._alive = False
+
+    def stop(self) -> None:
+        self.stopped = True
+        self._alive = False
+
+
+def test_agent_control_request_stops_one_agent(tmp_path: Path) -> None:
+    mgr = _deadline_manager(tmp_path, max_runtime_seconds=0)
+    handle = _FakeAgentHandle("agent-1", alive=True)
+    mgr.handles = [handle]  # type: ignore[list-item]
+    mgr._running = True
+    mgr._save_sessions = lambda: None  # type: ignore[method-assign]
+    control = tmp_path / ".coral" / "public" / "control" / "agents" / "agent-1.json"
+    control.parent.mkdir(parents=True)
+    control.write_text(json.dumps({"agent_id": "agent-1", "desired_state": "stopped"}))
+
+    mgr._apply_agent_control_requests()
+
+    assert handle.interrupted is True
+    assert "agent-1" in mgr._manual_stopped_agents
+    state = read_agent_state(tmp_path / ".coral").agents["agent-1"]
+    assert state.state == "stopped"
+
+
+def test_agent_control_request_resumes_one_agent(monkeypatch, tmp_path: Path) -> None:
+    mgr = _deadline_manager(tmp_path, max_runtime_seconds=0)
+    old_handle = _FakeAgentHandle("agent-1", alive=False)
+    new_handle = _FakeAgentHandle("agent-1", alive=True)
+    mgr.handles = [old_handle]  # type: ignore[list-item]
+    mgr._manual_stopped_agents.add("agent-1")
+    mgr._running = True
+    mgr._save_sessions = lambda: None  # type: ignore[method-assign]
+    control = tmp_path / ".coral" / "public" / "control" / "agents" / "agent-1.json"
+    control.parent.mkdir(parents=True)
+    control.write_text(json.dumps({"agent_id": "agent-1", "desired_state": "running"}))
+    calls: list[tuple[int, str | None]] = []
+
+    def _fake_restart(idx: int, prompt: str | None = None, prompt_source: str | None = None):
+        calls.append((idx, prompt_source))
+        return new_handle
+
+    monkeypatch.setattr(mgr, "_restart_agent", _fake_restart)
+
+    mgr._apply_agent_control_requests()
+
+    assert calls == [(0, "manual-resume")]
+    assert mgr.handles == [new_handle]
+    assert "agent-1" not in mgr._manual_stopped_agents
+    state = read_agent_state(tmp_path / ".coral").agents["agent-1"]
+    assert state.state == "active"
+
+
+def test_agent_prompt_request_interrupts_running_agent(monkeypatch, tmp_path: Path) -> None:
+    mgr = _deadline_manager(tmp_path, max_runtime_seconds=0)
+    old_handle = _FakeAgentHandle("agent-1", alive=True)
+    new_handle = _FakeAgentHandle("agent-1", alive=True)
+    mgr.handles = [old_handle]  # type: ignore[list-item]
+    mgr._running = True
+    control = tmp_path / ".coral" / "public" / "control" / "agents" / "agent-1.json"
+    control.parent.mkdir(parents=True)
+    control.write_text(
+        json.dumps(
+            {
+                "agent_id": "agent-1",
+                "action": "prompt",
+                "desired_state": "running",
+                "prompt": "Please inspect the latest failed eval.",
+                "command_id": "cmd-1",
+            }
+        )
+    )
+    calls: list[tuple[int, str, str | None]] = []
+
+    def _fake_interrupt(idx: int, prompt: str, prompt_source: str | None = None):
+        calls.append((idx, prompt, prompt_source))
+        return new_handle
+
+    monkeypatch.setattr(mgr, "_interrupt_and_resume", _fake_interrupt)
+
+    mgr._apply_agent_control_requests()
+
+    assert calls == [(0, "Please inspect the latest failed eval.", "dashboard-prompt")]
+    assert mgr.handles == [new_handle]
+    saved = json.loads(control.read_text())
+    assert saved["action"] == "idle"
+    assert saved["prompt"] == ""
+    assert saved["last_prompt_applied_at"]
+
+
+# ---------------------------------------------------------------------------
 # RestartEvent / state dataclasses
 # ---------------------------------------------------------------------------
 
@@ -195,10 +376,12 @@ def test_restart_event_construction() -> None:
 
 def test_agent_runtime_state_roundtrip() -> None:
     rs = AgentRuntimeState(
-        state="paused",
-        paused_until=12345.0,
+        state="heartbeat",
+        paused_until=None,
         pause_count=2,
         last_fault_at="2026-04-29T01:00:00+00:00",
+        state_started_at=12345.0,
+        state_detail="reflect, pivot",
     )
     data = rs.to_dict()
     restored = AgentRuntimeState.from_dict(data)
@@ -391,6 +574,7 @@ def test_monitor_loop_stall_watchdog_does_not_crash_multi_island(tmp_path):
         results_dir=tmp_path,
         task_dir=tmp_path,
         run_dir=tmp_path,
+        snapshots_dir=tmp_path / "snapshots",
         coral_dir=coral_dir,
         agents_dir=tmp_path / "agents",
         repo_dir=tmp_path / "repo",

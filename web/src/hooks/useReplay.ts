@@ -40,7 +40,7 @@ export function useReplay(attempts: Attempt[]): ReplayState {
       timerRef.current = null;
     }
 
-    if (active && playing) {
+    if (active && playing && currentIndex < chronological.length) {
       timerRef.current = setInterval(() => {
         setCurrentIndex((prev) => Math.min(prev + 1, chronological.length));
       }, 1000 / speed);
@@ -49,13 +49,7 @@ export function useReplay(attempts: Attempt[]): ReplayState {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [active, playing, speed, chronological.length]);
-
-  useEffect(() => {
-    if (active && playing && currentIndex >= chronological.length) {
-      setPlaying(false);
-    }
-  }, [active, playing, currentIndex, chronological.length]);
+  }, [active, playing, currentIndex, speed, chronological.length]);
 
   const start = useCallback(() => {
     if (chronological.length === 0) return;
@@ -71,7 +65,8 @@ export function useReplay(attempts: Attempt[]): ReplayState {
   }, []);
 
   const togglePlay = useCallback(() => {
-    if (!playing && currentIndex >= chronological.length) {
+    const effectivePlaying = playing && currentIndex < chronological.length;
+    if (!effectivePlaying && currentIndex >= chronological.length) {
       setCurrentIndex(0);
       setPlaying(true);
     } else {
@@ -108,10 +103,11 @@ export function useReplay(attempts: Attempt[]): ReplayState {
 
   const progress =
     chronological.length > 0 ? currentIndex / chronological.length : 0;
+  const effectivePlaying = playing && currentIndex < chronological.length;
 
   return {
     active,
-    playing,
+    playing: effectivePlaying,
     currentIndex,
     speed,
     totalAttempts: chronological.length,

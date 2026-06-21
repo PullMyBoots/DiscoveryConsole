@@ -43,6 +43,26 @@ coral init my-task                       # scaffold a task
 cd my-task && coral start -c task.yaml   # launch agents
 ```
 
+`coral init` also creates a research-workbench `knowledge/` skeleton with
+source folders, notes, agent/island brief folders, `manifest.jsonl`, and
+`eval_spec.md` so Codex can prepare references, eval trust criteria, and
+agent starting routes before launch.
+
+### Codex Research Workbench Skill
+
+This repository includes an optional Codex skill for the Codex-prepared CORAL
+research workflow:
+
+```bash
+mkdir -p "$HOME/.codex/skills"
+cp -a codex-skill/coral-research-workbench "$HOME/.codex/skills/"
+```
+
+The skill teaches Codex to prepare CORAL workspaces, knowledge bases, eval
+profiles, baseline records, resource-aware evaluator pools, and agent/island
+plans before the user launches the run from the CORAL control panel. See
+[codex-skill/README.md](codex-skill/README.md).
+
 ### Supported Agents
 
 | Agent | `agents.runtime` |

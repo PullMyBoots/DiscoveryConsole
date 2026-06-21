@@ -6,6 +6,13 @@ export default defineConfig({
   build: {
     outDir: "../coral/web/static",
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        entryFileNames: "assets/index.js",
+        chunkFileNames: "assets/[name].js",
+        assetFileNames: "assets/[name][extname]",
+      },
+    },
   },
   server: {
     port: 5173,

@@ -32,6 +32,11 @@ class ProjectPaths:
     coral_dir: Path  # run_dir/.coral/
     agents_dir: Path  # run_dir/agents/
     repo_dir: Path  # run_dir/repo/ (cloned per-run)
+    snapshots_dir: Path | None = None  # run_dir/snapshots/ (frozen task inputs)
+
+    def __post_init__(self) -> None:
+        if self.snapshots_dir is None:
+            self.snapshots_dir = self.run_dir / "snapshots"
 
 
 def slugify(name: str) -> str:
@@ -52,10 +57,26 @@ _PER_ISLAND_SUBDIRS = (
     "logs",
     "skills",
     "agents",
-    "notes",
+    "knowledge",
     "heartbeat",
     "eval_logs",
     "roles",
+)
+
+
+_KNOWLEDGE_SUBDIRS = (
+    "sources/papers",
+    "sources/repos",
+    "sources/web",
+    "sources/docs",
+    "sources/datasets",
+    "notes/research",
+    "notes/experiments",
+    "notes/synthesis",
+    "notes/open-questions",
+    "briefs/agent-seeds",
+    "inbox",
+    "archive",
 )
 
 
@@ -84,6 +105,8 @@ def _build_island_subtree(
     """
     for sub in _PER_ISLAND_SUBDIRS:
         (island_root / sub).mkdir(parents=True, exist_ok=True)
+    _ensure_knowledge_base(island_root / "knowledge")
+    _link_legacy_notes_dir(island_root)
 
     # Seed bundled skills from coral/template/skills/
     if _SEED_SKILLS_DIR.is_dir():
@@ -122,6 +145,131 @@ def _build_island_subtree(
         str(coral_dir),
         island_id=_island_id_from_root(coral_dir, island_root),
     )
+
+
+def _ensure_knowledge_base(knowledge_dir: Path) -> None:
+    """Create the unified knowledge-base skeleton.
+
+    The old CORAL convention exposed ``notes/`` as the top-level knowledge
+    surface. The new layout keeps notes under ``knowledge/notes/`` and keeps
+    raw/source artifacts, briefs, and inbox material in the same durable tree.
+    """
+    knowledge_dir.mkdir(parents=True, exist_ok=True)
+    for sub in _KNOWLEDGE_SUBDIRS:
+        (knowledge_dir / sub).mkdir(parents=True, exist_ok=True)
+
+    index = knowledge_dir / "index.md"
+    if not index.exists():
+        index.write_text(
+            "# Knowledge Index\n\n"
+            "## Start Here\n"
+            "- Add task context in `briefs/task-context.md`.\n"
+            "- Add research summaries in `notes/research/`.\n"
+            "- Add experiment reflections in `notes/experiments/`.\n\n"
+            "## Sources\n"
+            "- Papers: `sources/papers/`\n"
+            "- Repositories: `sources/repos/`\n"
+            "- Web/docs/datasets: `sources/`\n"
+        )
+
+    manifest = knowledge_dir / "manifest.jsonl"
+    if not manifest.exists():
+        manifest.write_text("")
+
+    notes_index = knowledge_dir / "notes" / "index.md"
+    if not notes_index.exists():
+        notes_index.write_text(
+            "# Notes Index\n\n"
+            "## Research\n"
+            "- (none yet)\n\n"
+            "## Experiments\n"
+            "- (none yet)\n\n"
+            "## Open Questions\n"
+            "- (none yet)\n"
+        )
+
+
+def _link_legacy_notes_dir(island_root: Path) -> None:
+    """Expose ``notes`` as a compatibility alias for ``knowledge/notes``."""
+    notes_dir = island_root / "notes"
+    target = island_root / "knowledge" / "notes"
+
+    if notes_dir.is_symlink():
+        notes_dir.unlink()
+    elif notes_dir.exists():
+        # Preserve any pre-existing files by moving them into knowledge/notes.
+        target.mkdir(parents=True, exist_ok=True)
+        for entry in notes_dir.iterdir():
+            dst = target / entry.name
+            if dst.exists():
+                continue
+            shutil.move(str(entry), str(dst))
+        try:
+            notes_dir.rmdir()
+        except OSError:
+            return
+
+    if not notes_dir.exists():
+        rel = os.path.relpath(target.resolve(), island_root.resolve())
+        notes_dir.symlink_to(rel)
+
+
+def _copytree_replace(src: Path, dst: Path) -> None:
+    if dst.exists() or dst.is_symlink():
+        if dst.is_dir() and not dst.is_symlink():
+            shutil.rmtree(dst)
+        else:
+            dst.unlink()
+    shutil.copytree(src, dst, symlinks=True)
+
+
+def _snapshot_file_or_dir(src: Path, dst: Path) -> None:
+    if not src.exists():
+        return
+    if src.is_dir():
+        _copytree_replace(src, dst)
+    else:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+
+
+def _prepare_snapshots(
+    run_dir: Path,
+    task_source_dir: Path,
+    config: CoralConfig,
+) -> Path:
+    """Freeze task inputs that define the run's meaning."""
+    snapshots_dir = run_dir / "snapshots"
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+
+    _snapshot_file_or_dir(task_source_dir / "task.yaml", snapshots_dir / "task.yaml")
+    _snapshot_file_or_dir(task_source_dir / "seed", snapshots_dir / "seed")
+    _snapshot_file_or_dir(task_source_dir / "grader", snapshots_dir / "grader")
+
+    knowledge_src = Path(config.knowledge.path).expanduser()
+    if not knowledge_src.is_absolute():
+        knowledge_src = (task_source_dir / knowledge_src).resolve()
+    if config.knowledge.snapshot and knowledge_src.exists():
+        _snapshot_file_or_dir(knowledge_src, snapshots_dir / "knowledge")
+    else:
+        _ensure_knowledge_base(snapshots_dir / "knowledge")
+
+    return snapshots_dir
+
+
+def _seed_active_knowledge(coral_dir: Path, snapshots_dir: Path, config: CoralConfig) -> None:
+    """Seed each island's active knowledge base from the frozen snapshot."""
+    src = snapshots_dir / "knowledge"
+    if config.islands.count == 1:
+        destinations = [coral_dir / "public" / "knowledge"]
+    else:
+        destinations = [coral_dir / "islands" / str(i) / "knowledge" for i in range(config.islands.count)]
+
+    for dst in destinations:
+        if src.exists():
+            _copytree_replace(src, dst)
+        _ensure_knowledge_base(dst)
+        _link_legacy_notes_dir(dst.parent)
 
 
 def seed_agent_role(
@@ -229,11 +377,13 @@ def create_project(config: CoralConfig, config_dir: Path | None = None) -> Proje
     coral_dir = run_dir / ".coral"
     agents_dir = run_dir / "agents"
     run_repo = run_dir / "repo"
+    snapshots_dir = run_dir / "snapshots"
 
     logger.debug(f"results_dir={results_dir}, task_dir={task_dir}, run_dir={run_dir}")
 
     # Resolve task directory for relative path resolution
     effective_config_dir = config.task_dir or config_dir or Path.cwd()
+    task_source_dir = config.task_dir or config_dir or Path.cwd()
 
     # Create shared state directories.
     # Single-island (count == 1): keep today's exact layout under public/.
@@ -262,6 +412,9 @@ def create_project(config: CoralConfig, config_dir: Path | None = None) -> Proje
                 list(config.agents.skills),
             )
 
+    snapshots_dir = _prepare_snapshots(run_dir, task_source_dir, config)
+    _seed_active_knowledge(coral_dir, snapshots_dir, config)
+
     # Save config
     config.to_yaml(coral_dir / "config.yaml")
 
@@ -279,9 +432,6 @@ def create_project(config: CoralConfig, config_dir: Path | None = None) -> Proje
 
     # Clone source repo into run_dir/repo/
     repo_dir = clone_or_init_repo(source_repo, run_repo)
-
-    # Resolve task_dir (directory containing task.yaml)
-    task_source_dir = config.task_dir or config_dir or Path.cwd()
 
     # Auto-copy seed/ into repo (if present in task directory)
     seed_dir = task_source_dir / "seed"
@@ -305,6 +455,7 @@ def create_project(config: CoralConfig, config_dir: Path | None = None) -> Proje
         coral_dir=coral_dir,
         agents_dir=agents_dir,
         repo_dir=repo_dir,
+        snapshots_dir=snapshots_dir,
     )
 
 
@@ -325,4 +476,5 @@ def reconstruct_paths(coral_dir: Path) -> ProjectPaths:
         coral_dir=coral_dir,
         agents_dir=run_dir / "agents",
         repo_dir=run_dir / "repo",
+        snapshots_dir=run_dir / "snapshots",
     )

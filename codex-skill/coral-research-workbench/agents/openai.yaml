@@ -1,0 +1,4 @@
+interface:
+  display_name: "CORAL Research Workbench"
+  short_description: "Prepare a CORAL research workspace."
+  default_prompt: "Use this skill to turn a research idea into a runnable CORAL workspace with knowledge, baselines, eval profiles, agent briefs, and a control-panel-ready task configuration."

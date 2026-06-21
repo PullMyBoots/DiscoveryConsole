@@ -15,6 +15,7 @@ import zoomPlugin from "chartjs-plugin-zoom";
 import "chartjs-adapter-date-fns";
 import { Line } from "react-chartjs-2";
 import type { Attempt } from "../lib/api";
+import { baselineLabel, isBaselineAttempt, scoreLabel, scoreValue } from "../lib/scores";
 
 ChartJS.register(
   CategoryScale,
@@ -32,18 +33,19 @@ ChartJS.register(
 type ScaleMode = "linear" | "log";
 type ViewMode = "all" | "last50" | "last20" | "custom";
 type XAxisMode = "index" | "time";
+type SortMode = "time" | "score";
 
 const AGENT_PALETTE = [
-  "#374151", // gray-700
-  "#1e3a5f", // dark slate blue
-  "#5b4a6a", // dark mauve
-  "#4a5240", // dark olive
-  "#7c4a3a", // dark rust
-  "#2d5a5a", // dark teal
-  "#5a4630", // dark bronze
-  "#3b4f7a", // muted cobalt
-  "#6b4050", // muted berry
-  "#2e5e4e", // muted forest
+  "#2f6f73",
+  "#7a5a2f",
+  "#4f6f91",
+  "#7c4f64",
+  "#5d6f3f",
+  "#8a5f43",
+  "#5a6270",
+  "#6d5b8a",
+  "#3f7a57",
+  "#9a6049",
 ];
 
 function agentColor(index: number): string {
@@ -80,6 +82,8 @@ interface Props {
   direction?: "maximize" | "minimize";
   expanded?: boolean;
   animationDuration?: number;
+  metric?: string;
+  onSelectAttempt?: (attempt: Attempt) => void;
 }
 
 export default function ScoreChart({
@@ -88,11 +92,14 @@ export default function ScoreChart({
   direction = "maximize",
   expanded = false,
   animationDuration,
+  metric = "score",
+  onSelectAttempt,
 }: Props) {
   const chartRef = useRef<ChartJS<"line"> | null>(null);
   const [scaleMode, setScaleMode] = useState<ScaleMode>("linear");
   const [viewMode, setViewMode] = useState<ViewMode>("all");
   const [xAxisMode, setXAxisMode] = useState<XAxisMode>("index");
+  const [sortMode, setSortMode] = useState<SortMode>("time");
   const [rangeText, setRangeText] = useState("");
   const [selectedAgents, setSelectedAgents] = useState<Set<string>>(new Set());
   const [scoreMin, setScoreMin] = useState("");
@@ -100,9 +107,11 @@ export default function ScoreChart({
   const [hideCrashed, setHideCrashed] = useState(false);
   const [improvedOnly, setImprovedOnly] = useState(false);
 
+  const minimize = direction === "minimize";
+
   // Filter and sort
   let filtered = [...attempts]
-    .filter((a) => a.score !== null)
+    .filter((a) => scoreValue(a, metric) !== null)
     .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 
   if (expanded && hideCrashed) {
@@ -112,7 +121,14 @@ export default function ScoreChart({
     filtered = filtered.filter((a) => a.status === "improved");
   }
 
-  const sorted = filtered;
+  const sorted =
+    sortMode === "score"
+      ? [...filtered].sort((a, b) => {
+          const av = scoreValue(a, metric)!;
+          const bv = scoreValue(b, metric)!;
+          return minimize ? av - bv : bv - av;
+        })
+      : filtered;
   const agents = [...new Set(sorted.map((a) => a.agent_id))].sort();
 
   const toggleAgent = (id: string) => {
@@ -147,26 +163,28 @@ export default function ScoreChart({
 
   if (sliced.length === 0) sliced = sorted;
 
-  // Compute running best (direction-aware)
-  const minimize = direction === "minimize";
+  // Compute running best (direction-aware). Only meaningful in chronological order.
   const runningBest = sliced.reduce<number[]>((acc, a) => {
     const prev = acc.length > 0 ? acc[acc.length - 1] : (minimize ? Infinity : -Infinity);
-    acc.push(minimize ? Math.min(prev, a.score!) : Math.max(prev, a.score!));
+    const value = scoreValue(a, metric)!;
+    acc.push(minimize ? Math.min(prev, value) : Math.max(prev, value));
     return acc;
   }, []);
 
   // For log scale, ensure all values are positive
-  const scores = sliced.map((a) => a.score!);
+  const scores = sliced.map((a) => scoreValue(a, metric)!);
   const allPositive = scores.every((s) => s > 0) && runningBest.every((s) => s > 0);
   const effectiveScale = scaleMode === "log" && allPositive ? "logarithmic" : "linear";
 
-  const useTime = xAxisMode === "time";
+  const useTime = xAxisMode === "time" && sortMode === "time";
 
   // Figure out the global index offset for labels
   const offset = sorted.indexOf(sliced[0]);
   const labels: unknown[] = useTime
     ? sliced.map((a) => new Date(a.timestamp).getTime())
-    : sliced.map((_, i) => `#${offset + i + 1}`);
+    : sliced.map((_, i) =>
+        sortMode === "score" ? `rank ${offset + i + 1}` : `#${offset + i + 1}`
+      );
 
   const showPerAgent = selectedAgents.size > 0;
 
@@ -180,7 +198,7 @@ export default function ScoreChart({
           const color = agentColor(agents.indexOf(id));
           return {
             label: id,
-            data: sliced.map((a) => (a.agent_id === id ? a.score! : null)),
+            data: sliced.map((a) => (a.agent_id === id ? scoreValue(a, metric)! : null)),
             borderColor: color,
             backgroundColor: "transparent",
             borderWidth: lineWidth,
@@ -195,7 +213,7 @@ export default function ScoreChart({
         })
     : [
         {
-          label: "Score",
+          label: scoreLabel(metric),
           data: scores,
           borderColor: "#1a1d1e",
           backgroundColor: "rgba(26, 29, 30, 0.08)",
@@ -211,21 +229,49 @@ export default function ScoreChart({
           spanGaps: false,
         },
       ];
+  const baselineAttempts = sorted.filter(isBaselineAttempt);
+  const baselines = baselineAttempts
+    .map((attempt) => ({
+      label: baselineLabel(attempt),
+      value: scoreValue(attempt, metric),
+    }))
+    .filter((baseline): baseline is { label: string; value: number } => baseline.value !== null);
+  const baselineByLabel = new Map<string, number>();
+  for (const baseline of baselines) {
+    if (!baselineByLabel.has(baseline.label)) {
+      baselineByLabel.set(baseline.label, baseline.value);
+    }
+  }
+  const baselineDatasets = [...baselineByLabel.entries()].slice(0, 4).map(([label, value]) => ({
+    label: `Baseline: ${label}`,
+    data: sliced.map(() => value),
+    borderColor: "#7c4a3a",
+    borderWidth: 1,
+    borderDash: [2, 4],
+    pointRadius: 0,
+    fill: false,
+    tension: 0,
+  }));
 
   const data = {
     labels,
     datasets: [
       ...agentDatasets,
-      {
-        label: "Best",
-        data: runningBest,
-        borderColor: showPerAgent ? "#a0a3a5" : "#1a1d1e",
-        borderWidth: 1,
-        borderDash: [6, 4],
-        pointRadius: 0,
-        fill: false,
-        tension: 0,
-      },
+      ...baselineDatasets,
+      ...(sortMode === "time"
+        ? [
+            {
+              label: "Best",
+              data: runningBest,
+              borderColor: showPerAgent ? "#a0a3a5" : "#1a1d1e",
+              borderWidth: 1,
+              borderDash: [6, 4],
+              pointRadius: 0,
+              fill: false,
+              tension: 0,
+            },
+          ]
+        : []),
     ],
   };
 
@@ -306,6 +352,15 @@ export default function ScoreChart({
           }
         : false,
     },
+    onClick: (_event: unknown, elements: Array<{ index: number }>) => {
+      if (!onSelectAttempt || elements.length === 0) return;
+      const element = elements[0] as { datasetIndex?: number; index: number };
+      if (element.datasetIndex !== undefined && element.datasetIndex >= agentDatasets.length) {
+        return;
+      }
+      const attempt = sliced[elements[0].index];
+      if (attempt) onSelectAttempt(attempt);
+    },
     scales: {
       x: xScale,
       y: {
@@ -341,12 +396,12 @@ export default function ScoreChart({
   const btnClass = (active: boolean) =>
     `px-2 py-0.5 font-mono text-[10px] tracking-wider uppercase border border-border rounded-sm transition-colors duration-100 ${
       active
-        ? "bg-foreground text-background"
-        : "bg-background text-foreground hover:bg-muted"
+        ? "bg-accent text-white"
+        : "bg-surface text-foreground hover:bg-surface-muted"
     }`;
 
   const inputClass =
-    "w-20 px-2 py-0.5 font-mono text-[10px] border border-border rounded-sm bg-background text-foreground placeholder:text-muted-fg/50 outline-none focus:ring-1 focus:ring-border-strong";
+    "w-20 px-2 py-0.5 font-mono text-[10px] border border-border rounded-sm bg-surface text-foreground placeholder:text-muted-fg/50 outline-none focus:ring-1 focus:ring-accent/45";
 
   return (
     <div className={expanded ? "h-full flex flex-col" : ""}>
@@ -383,8 +438,27 @@ export default function ScoreChart({
           <button
             className={btnClass(xAxisMode === "time")}
             onClick={() => setXAxisMode("time")}
+            disabled={sortMode === "score"}
+            title={sortMode === "score" ? "Time axis is only available in chronological order" : ""}
           >
             Time
+          </button>
+        </div>
+        <div className="flex items-center gap-1">
+          <span className="font-mono text-[10px] text-muted-fg uppercase tracking-widest mr-2">
+            Order
+          </span>
+          <button
+            className={btnClass(sortMode === "time")}
+            onClick={() => setSortMode("time")}
+          >
+            Time
+          </button>
+          <button
+            className={btnClass(sortMode === "score")}
+            onClick={() => setSortMode("score")}
+          >
+            Score
           </button>
         </div>
         <div className="flex items-center gap-1">
@@ -437,8 +511,8 @@ export default function ScoreChart({
                     key={id}
                     className={`flex items-center px-1.5 py-0.5 font-mono text-[10px] tracking-wider border rounded-sm transition-colors duration-100 shrink-0 ${
                       isActive
-                        ? "bg-foreground text-background border-foreground"
-                        : "bg-background text-foreground hover:bg-muted border-border"
+                        ? "bg-accent text-white border-accent"
+                        : "bg-surface text-foreground hover:bg-surface-muted border-border"
                     }`}
                     onClick={() => toggleAgent(id)}
                   >

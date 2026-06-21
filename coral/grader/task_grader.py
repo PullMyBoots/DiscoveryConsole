@@ -16,14 +16,16 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import json
+import os
 import shutil
 import subprocess
 import sys
 from abc import ABC, abstractmethod
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from coral.config import GraderConfig
+from coral.config import GraderConfig, GraderProfileConfig, ResourceConfig
 from coral.types import BUDGET_CLASS_TUNE, Score, ScoreBundle, Task, get_budget_class
 
 DEFAULT_TUNE_DESCRIPTION = (
@@ -52,15 +54,74 @@ class TaskGrader(ABC):
     def __init__(self, config: GraderConfig) -> None:
         self.config = config
         self.tasks = []
+        self._resource_override: ResourceConfig | None = None
 
     @property
     def args(self) -> dict[str, Any]:
-        """Grader-specific args from config."""
-        return self.config.args
+        """Grader-specific args with the selected profile layered on top."""
+        args = dict(self.config.args)
+        profile = self.profile_config
+        if profile is not None:
+            args.update(profile.args)
+        return args
+
+    @property
+    def profile(self) -> str:
+        """Selected evaluation profile name, e.g. quick/medium/full/stress."""
+        return self.config.profile
+
+    @property
+    def eval_version(self) -> str:
+        """Evaluation version that produced this attempt's score."""
+        return self.config.eval_version
+
+    @property
+    def profile_config(self) -> GraderProfileConfig | None:
+        """Selected profile config, or None when no profile block is defined."""
+        return self.config.profiles.get(self.profile)
+
+    @property
+    def resources(self) -> ResourceConfig:
+        """Resource budget for this eval, with profile overrides applied."""
+        if self._resource_override is not None:
+            return self._resource_override
+        base = self.config.resources
+        profile = self.profile_config
+        if profile is None or not profile.resources.active():
+            return base
+        override = profile.resources
+        return ResourceConfig(
+            cpu_cores=override.cpu_cores or base.cpu_cores,
+            memory_gb=override.memory_gb or base.memory_gb,
+            gpu_count=override.gpu_count or base.gpu_count,
+            gpu_ids=override.gpu_ids or base.gpu_ids,
+        )
+
+    def resource_env(self) -> dict[str, str]:
+        """Environment variables that expose the eval resource budget."""
+        env = self.resources.to_env()
+        cpu = env.get("CORAL_CPU_CORES")
+        if cpu:
+            env.setdefault("OMP_NUM_THREADS", cpu)
+            env.setdefault("MKL_NUM_THREADS", cpu)
+            env.setdefault("OPENBLAS_NUM_THREADS", cpu)
+            env.setdefault("NUMEXPR_NUM_THREADS", cpu)
+        return env
+
+    def subprocess_env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
+        """Base environment for grader-launched subprocesses."""
+        env = dict(os.environ)
+        env.update(self.resource_env())
+        if extra:
+            env.update(extra)
+        return env
 
     @property
     def timeout(self) -> int | None:
         """Eval timeout in seconds, from grader config. None means no limit."""
+        profile = self.profile_config
+        if profile is not None and profile.timeout > 0:
+            return profile.timeout
         return self.config.timeout or None
 
     @property
@@ -175,6 +236,7 @@ class TaskGrader(ABC):
             text=True,
             cwd=self.codebase_path,
             timeout=self.timeout,
+            env=self.subprocess_env(),
         )
 
     def run_script(
@@ -189,6 +251,7 @@ class TaskGrader(ABC):
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=self.subprocess_env(),
         )
 
     def run_script_json(
@@ -229,6 +292,45 @@ class TaskGrader(ABC):
             f"stdout (last 500): {stdout[-500:]}\n"
             f"stderr (last 500): {result.stderr.strip()[-500:]}"
         )
+
+    def report_progress(
+        self,
+        *,
+        current: int,
+        total: int,
+        phase: str = "evaluate",
+        message: str = "",
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Append a structured progress event for the frontend.
+
+        Events are written to ``eval_logs/<attempt_hash>/progress.jsonl``.
+        The method is best-effort: progress reporting must never fail the
+        grader, because eval correctness is more important than UI telemetry.
+        """
+        try:
+            total = max(int(total), 0)
+            current = max(int(current), 0)
+            percent = (current / total) if total else None
+            event: dict[str, Any] = {
+                "type": "progress",
+                "job_id": Path(self.codebase_path).name,
+                "phase": phase,
+                "current": current,
+                "total": total,
+                "percent": percent,
+                "message": message,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "eval_version": self.eval_version,
+                "eval_profile": self.profile,
+            }
+            if extra:
+                event.update(extra)
+            progress_path = self.eval_logs_dir / "progress.jsonl"
+            with progress_path.open("a") as f:
+                f.write(json.dumps(event, sort_keys=True) + "\n")
+        except Exception:
+            return
 
     def score(
         self,
@@ -287,6 +389,13 @@ class TaskGrader(ABC):
         self.codebase_path = codebase_path
         self.tasks = tasks
         self.island_id = kwargs.pop("island_id", None)
+        resource_env = self.resource_env()
+        for task in self.tasks:
+            task.metadata.setdefault("eval_version", self.eval_version)
+            task.metadata.setdefault("eval_profile", self.profile)
+            task.metadata.setdefault("resources", resource_env)
+
+        self.report_progress(current=0, total=1, phase="evaluate", message="started")
 
         loop = asyncio.get_running_loop()
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
@@ -297,10 +406,12 @@ class TaskGrader(ABC):
                 )
             except TimeoutError:
                 bundle = self.fail(f"Evaluation timed out after {self.timeout}s")
-                return self._annotate_tune(bundle)
+                self.report_progress(current=1, total=1, phase="timeout", message="timed out")
+                return self._annotate_tune(self._annotate_eval_context(bundle))
 
         if isinstance(result, ScoreBundle):
-            return self._annotate_tune(result)
+            self.report_progress(current=1, total=1, phase="evaluate", message="completed")
+            return self._annotate_tune(self._annotate_eval_context(result))
 
         # float/int — wrap in a ScoreBundle
         value = float(result)
@@ -308,7 +419,14 @@ class TaskGrader(ABC):
             scores={"eval": Score(value=value, name="eval")},
             aggregated=value,
         )
-        return self._annotate_tune(bundle)
+        self.report_progress(current=1, total=1, phase="evaluate", message="completed")
+        return self._annotate_tune(self._annotate_eval_context(bundle))
+
+    def _annotate_eval_context(self, bundle: ScoreBundle) -> ScoreBundle:
+        bundle.metadata.setdefault("eval_version", self.eval_version)
+        bundle.metadata.setdefault("eval_profile", self.profile)
+        bundle.metadata.setdefault("resources", self.resources.to_env())
+        return bundle
 
     def _annotate_tune(self, bundle: ScoreBundle) -> ScoreBundle:
         """Prepend the tune-mode description to bundle feedback when self.tune.

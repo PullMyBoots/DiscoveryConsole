@@ -71,8 +71,14 @@ def test_create_project_structure():
         assert (paths.coral_dir / "public" / "logs").is_dir()
         assert (paths.coral_dir / "public" / "skills").is_dir()
         assert (paths.coral_dir / "public" / "notes").is_dir()
+        assert (paths.coral_dir / "public" / "knowledge").is_dir()
+        assert (paths.coral_dir / "public" / "notes").resolve() == (
+            paths.coral_dir / "public" / "knowledge" / "notes"
+        ).resolve()
         assert (paths.coral_dir / "private").is_dir()
         assert (paths.coral_dir / "config.yaml").is_file()
+        assert paths.snapshots_dir.exists()
+        assert (paths.snapshots_dir / "knowledge").is_dir()
         assert paths.agents_dir.exists()
         # Structure: results/<task-slug>/<timestamp>/
         assert "test-task" in str(paths.task_dir)
@@ -102,6 +108,36 @@ def test_create_project_unique_runs():
         # latest should point to the second run directory
         latest = paths1.task_dir / "latest"
         assert latest.resolve() == paths2.run_dir.resolve()
+
+
+def test_create_project_snapshots_and_seeds_knowledge():
+    """Task knowledge is frozen per run and seeded into the shared knowledge base."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
+        root = Path(d)
+        repo = root / "repo"
+        _git_init(str(repo))
+
+        (root / "task.yaml").write_text("task:\n  name: Test Task\n  description: d\n")
+        paper_dir = root / "knowledge" / "sources" / "papers" / "paper-a"
+        paper_dir.mkdir(parents=True)
+        (paper_dir / "text.md").write_text("# Paper A\n")
+        research_dir = root / "knowledge" / "notes" / "research"
+        research_dir.mkdir(parents=True)
+        (research_dir / "method-a.md").write_text("# Method A\n")
+
+        config = CoralConfig(
+            task=TaskConfig(name="Test Task", description="Test task"),
+            grader=GraderConfig(),
+            agents=AgentConfig(count=1),
+            workspace=WorkspaceConfig(results_dir=str(root / "results"), repo_path=str(repo)),
+        )
+
+        paths = create_project(config, config_dir=root)
+
+        assert (paths.snapshots_dir / "task.yaml").read_text().startswith("task:")
+        assert (paths.snapshots_dir / "knowledge" / "sources" / "papers" / "paper-a" / "text.md").read_text() == "# Paper A\n"
+        assert (paths.coral_dir / "public" / "knowledge" / "sources" / "papers" / "paper-a" / "text.md").read_text() == "# Paper A\n"
+        assert (paths.coral_dir / "public" / "notes" / "research" / "method-a.md").read_text() == "# Method A\n"
 
 
 def test_write_agent_id():

@@ -48,17 +48,17 @@ export default function ReplayBar({ replay }: Props) {
   return createPortal(
     <div className="fixed bottom-0 left-0 right-0 z-[90] px-6 pb-4 pointer-events-none">
       <div className="max-w-3xl mx-auto pointer-events-auto">
-        <div className="bg-foreground text-background rounded-xl shadow-2xl overflow-hidden">
+        <div className="bg-accent-fg text-white rounded-xl shadow-2xl overflow-hidden">
           {/* Seekable progress bar */}
           <div
-            className="h-1.5 bg-background/15 cursor-pointer group relative"
+            className="h-1.5 bg-white/15 cursor-pointer group relative"
             onClick={handleBarClick}
           >
             <div
-              className="absolute inset-y-0 left-0 bg-background/70 transition-[width] duration-100"
+              className="absolute inset-y-0 left-0 bg-accent-soft transition-[width] duration-100"
               style={{ width: `${pct}%` }}
             />
-            <div className="absolute inset-0 bg-background/10 opacity-0 group-hover:opacity-100 transition-opacity" />
+            <div className="absolute inset-0 bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity" />
           </div>
 
           {/* Controls */}
@@ -119,11 +119,11 @@ export default function ReplayBar({ replay }: Props) {
                 <span
                   className={`inline-block w-1.5 h-1.5 rounded-full ${
                     la.status === "improved"
-                      ? "bg-green-400"
+                      ? "bg-success-soft"
                       : la.status === "crashed"
-                        ? "bg-red-400"
+                        ? "bg-danger-soft"
                         : la.status === "regressed"
-                          ? "bg-orange-400"
+                          ? "bg-warning-soft"
                           : "bg-background/40"
                   }`}
                 />

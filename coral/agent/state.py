@@ -1,4 +1,4 @@
-"""Per-agent reliability state: crash history events and persisted PAUSED markers.
+"""Per-agent reliability state: crash history events and persisted lifecycle markers.
 
 The manager records `RestartEvent`s in memory and persists a small JSON file at
 `<coral_dir>/public/agent_state.json` whenever an agent transitions into or out
@@ -15,7 +15,7 @@ import json
 import os
 import tempfile
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +41,7 @@ class RestartEvent:
 class AgentRuntimeState:
     """Persisted reliability state for a single agent.
 
-    `state` is one of "active", "paused".
+    `state` is one of "active", "heartbeat", "paused", "stopped".
     `paused_until` is the wall-clock epoch second the pause expires; it is None
     when the agent is not currently paused.
     """
@@ -50,17 +50,26 @@ class AgentRuntimeState:
     paused_until: float | None = None
     pause_count: int = 0
     last_fault_at: str | None = None  # ISO-8601 UTC timestamp of most recent fault dump
+    state_started_at: float | None = None
+    state_detail: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AgentRuntimeState:
+        state_started_at = data.get("state_started_at")
+        try:
+            state_started_at = float(state_started_at) if state_started_at is not None else None
+        except (TypeError, ValueError):
+            state_started_at = None
         return cls(
             state=str(data.get("state", "active")),
             paused_until=data.get("paused_until"),
             pause_count=int(data.get("pause_count", 0)),
             last_fault_at=data.get("last_fault_at"),
+            state_started_at=state_started_at,
+            state_detail=data.get("state_detail"),
         )
 
 
@@ -106,7 +115,7 @@ def write_agent_state(coral_dir: str | Path, document: AgentStateDocument) -> Pa
     target = state_file_path(coral_dir)
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    document.updated_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    document.updated_at = datetime.now(UTC).isoformat(timespec="seconds")
     payload = json.dumps(document.to_dict(), indent=2, sort_keys=True)
 
     fd, tmp_path = tempfile.mkstemp(prefix=".agent_state.", suffix=".tmp", dir=str(target.parent))

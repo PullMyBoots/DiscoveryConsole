@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type LogData, type LogTurn, type LogSession, type LogEntry, type RunStatus, type Attempt } from "../lib/api";
 import { useSSE } from "../hooks/useSSE";
 import StatusBadge from "../components/StatusBadge";
+import { EmptyState, IconBadge, PageTitle, Panel } from "../components/Ui";
 
 export default function Logs() {
   const [agentList, setAgentList] = useState<string[]>([]);
@@ -106,12 +107,10 @@ export default function Logs() {
     <>
       {/* LEFT COLUMN — Agent list + per-agent attempts */}
       <div className="overflow-y-auto border-r border-border p-5">
-        <p className="font-mono text-[10px] tracking-widest uppercase text-muted-fg mb-3">
-          Agents
-        </p>
+        <PageTitle icon="logs" title="Logs" subtitle="Inspect agent sessions and recent attempts" />
 
         {agentList.length === 0 ? (
-          <p className="font-mono text-xs text-muted-fg">No agents</p>
+          <EmptyState icon="users" title="No agents" body="Agent logs appear here after a run starts." />
         ) : (
           <div className="space-y-2">
             {agentList.map((id) => {
@@ -121,10 +120,10 @@ export default function Logs() {
                 <button
                   key={id}
                   onClick={() => setSelectedAgent(id)}
-                  className={`w-full text-left p-4 rounded-lg transition-colors duration-100 border ${
+                    className={`w-full rounded-xl border p-4 text-left transition-colors duration-100 ${
                     isSelected
-                      ? "bg-foreground text-background border-foreground"
-                      : "border-border hover:bg-muted/50"
+                      ? "border-accent bg-accent text-white shadow-sm"
+                      : "border-border bg-surface/85 hover:bg-surface"
                   }`}
                 >
                   <div className="flex items-center justify-between mb-2">
@@ -136,7 +135,7 @@ export default function Logs() {
                   {agent && (
                     <div
                       className={`font-mono text-[11px] grid grid-cols-2 gap-y-1 gap-x-4 ${
-                        isSelected ? "text-background/60" : "text-muted-fg"
+                        isSelected ? "text-white/70" : "text-muted-fg"
                       }`}
                     >
                       <span>{agent.attempts} attempts</span>
@@ -166,10 +165,8 @@ export default function Logs() {
         {/* Per-agent recent attempts */}
         {selectedAgent && agentAttempts.length > 0 && (
           <div className="mt-6">
-            <p className="font-mono text-[10px] tracking-widest uppercase text-muted-fg mb-3">
-              Recent Attempts
-            </p>
-            <div className="border border-border rounded-xl overflow-hidden">
+            <Panel title="Recent Attempts" icon="activity">
+            <div className="overflow-hidden rounded-xl border border-border">
               {[...agentAttempts].sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, 10).map((a) => (
                 <div
                   key={a.commit_hash}
@@ -185,6 +182,7 @@ export default function Logs() {
                 </div>
               ))}
             </div>
+            </Panel>
           </div>
         )}
       </div>
@@ -192,17 +190,22 @@ export default function Logs() {
       {/* RIGHT COLUMN — Log content */}
       <div ref={logPanelRef} className="overflow-y-auto p-5">
         {!selectedAgent ? (
-          <p className="font-mono text-xs text-muted-fg py-6">
-            Select an agent to view logs.
-          </p>
+          <EmptyState icon="logs" title="Select an agent" body="Choose an agent on the left to inspect its session log." />
         ) : loading && !logData ? (
-          <p className="font-mono text-xs text-muted-fg py-6">Loading logs...</p>
+          <EmptyState icon="logs" title="Loading logs" />
         ) : !logData || logData.turns.length === 0 ? (
-          <p className="font-mono text-xs text-muted-fg py-6">No log entries.</p>
+          <EmptyState icon="logs" title="No log entries" />
         ) : (
           <>
+            <div className="mb-4 flex items-center gap-3">
+              <IconBadge name="logs" />
+              <div>
+                <h1 className="font-display text-2xl">{selectedAgent}</h1>
+                <p className="font-mono text-[11px] text-muted-fg">Live session transcript</p>
+              </div>
+            </div>
             {/* Stats bar */}
-            <div className="flex items-center gap-4 mb-4 font-mono text-[11px] text-muted-fg flex-wrap">
+            <div className="mb-4 flex flex-wrap items-center gap-4 rounded-xl border border-border bg-surface/85 px-4 py-3 font-mono text-[11px] text-muted-fg">
               <span>{logData.turns.length} turns</span>
               <span>{logData.sessions?.length ?? 1} session{(logData.sessions?.length ?? 1) !== 1 ? "s" : ""}</span>
               {logData.agent_meta ? (
@@ -281,7 +284,7 @@ function SessionBlock({
     <div className="mb-1.5">
       <button
         onClick={() => setCollapsed(!collapsed)}
-        className="w-full flex items-center gap-2 py-2 px-3 bg-foreground text-background font-mono text-[11px] tracking-widest uppercase hover:opacity-90 transition-opacity rounded-t-lg"
+        className="flex w-full items-center gap-2 rounded-t-lg border border-border bg-surface/85 px-3 py-2 font-mono text-[11px] uppercase tracking-wider text-muted-fg transition-colors hover:bg-surface"
       >
         <span>
           Session {session.session_index + 1}
@@ -293,7 +296,7 @@ function SessionBlock({
             {(session.meta.duration_ms / 1000).toFixed(0)}s
           </span>
         )}
-        <span className="ml-auto">{collapsed ? "▼" : "▲"}</span>
+        <span className="ml-auto">{collapsed ? "Open" : "Close"}</span>
       </button>
       <div
         className="grid transition-[grid-template-rows] duration-300 ease-in-out"
@@ -313,9 +316,9 @@ function TurnCard({ turn }: { turn: LogTurn }) {
   const [expandThinking, setExpandThinking] = useState(false);
 
   return (
-    <div className="py-4 border-b border-border">
+    <div className="border-b border-border bg-surface/55 px-3 py-4 last:border-b-0">
       <div className="flex items-center gap-2 mb-3">
-        <span className="font-mono text-[11px] bg-foreground text-background px-1.5 py-0.5 rounded-md">
+        <span className="rounded-md border border-border bg-muted/40 px-1.5 py-0.5 font-mono text-[11px] text-foreground">
           T{turn.index + 1}
         </span>
         {(turn.usage.output_tokens || turn.usage.input_tokens) && (
@@ -353,7 +356,7 @@ function TurnCard({ turn }: { turn: LogTurn }) {
 
           {entry.type === "tool_call" && (
             <div className="flex items-start gap-2 p-2 border border-border bg-muted/50 rounded-lg">
-              <span className="font-mono text-[11px] bg-foreground text-background px-1.5 py-0.5 rounded-md shrink-0">
+              <span className="font-mono text-[11px] bg-accent-soft text-accent-fg px-1.5 py-0.5 rounded-md shrink-0">
                 {entry.content}
               </span>
               <span className="font-mono text-[11px] text-muted-fg truncate">
@@ -424,16 +427,16 @@ function CoralPrompt({ content, source, taskName }: {
     : (source || "CORAL").toUpperCase();
 
   const accentClass =
-    source?.includes("reflect") ? "border-amber-500/60 bg-amber-500/5"
-    : source?.includes("consolidate") ? "border-blue-500/60 bg-blue-500/5"
-    : source === "start" ? "border-emerald-500/60 bg-emerald-500/5"
-    : "border-purple-500/60 bg-purple-500/5";
+    source?.includes("reflect") ? "border-warning/60 bg-warning-soft/65"
+    : source?.includes("consolidate") ? "border-info/60 bg-info-soft/70"
+    : source === "start" ? "border-success/60 bg-success-soft/70"
+    : "border-accent/60 bg-accent-soft/70";
 
   const badgeClass =
-    source?.includes("reflect") ? "bg-amber-500 text-white"
-    : source?.includes("consolidate") ? "bg-blue-500 text-white"
-    : source === "start" ? "bg-emerald-500 text-white"
-    : "bg-purple-500 text-white";
+    source?.includes("reflect") ? "bg-warning text-white"
+    : source?.includes("consolidate") ? "bg-info text-white"
+    : source === "start" ? "bg-success text-white"
+    : "bg-accent text-white";
 
   return (
     <div className={`border-l-2 rounded-r-lg p-3 ${accentClass}`}>
@@ -549,7 +552,7 @@ function SystemInit({ entry }: { entry: LogEntry }) {
 function SubagentStart({ entry }: { entry: LogEntry }) {
   return (
     <div className="flex items-start gap-2 p-2 border border-border bg-muted/50 rounded-lg">
-      <span className="font-mono text-[11px] bg-foreground text-background px-1.5 py-0.5 rounded-md shrink-0">
+      <span className="font-mono text-[11px] bg-accent-soft text-accent-fg px-1.5 py-0.5 rounded-md shrink-0">
         Subagent
       </span>
       <span className="font-mono text-[11px] text-muted-fg truncate">
@@ -564,8 +567,8 @@ function SubagentProgress({ entry }: { entry: LogEntry }) {
 
   return (
     <div className="ml-4 flex items-center gap-2 py-0.5">
-      <span className="w-1 h-1 rounded-full bg-cyan-500/60 shrink-0" />
-      <span className="font-mono text-[10px] bg-cyan-500/20 text-cyan-700 dark:text-cyan-300 px-1.5 py-0.5 rounded shrink-0">
+      <span className="w-1 h-1 rounded-full bg-info/70 shrink-0" />
+      <span className="font-mono text-[10px] bg-info-soft text-info px-1.5 py-0.5 rounded shrink-0">
         {entry.content}
       </span>
       {description && (
@@ -590,7 +593,7 @@ function SubagentDone({ entry }: { entry: LogEntry }) {
 
   return (
     <div className="flex items-start gap-2 p-2 border border-border bg-muted/50 rounded-lg">
-      <span className="font-mono text-[11px] bg-foreground text-background px-1.5 py-0.5 rounded-md shrink-0">
+      <span className="font-mono text-[11px] bg-success-soft text-success px-1.5 py-0.5 rounded-md shrink-0">
         Done
       </span>
       <span className="font-mono text-[11px] text-muted-fg truncate">
@@ -605,12 +608,12 @@ function CompactBoundary({ entry }: { entry: LogEntry }) {
 
   return (
     <div className="flex items-center gap-3 py-1">
-      <div className="flex-1 border-t border-dashed border-amber-500/40" />
-      <span className="font-mono text-[10px] text-amber-600 dark:text-amber-400 shrink-0">
+      <div className="flex-1 border-t border-dashed border-warning/45" />
+      <span className="font-mono text-[10px] text-warning shrink-0">
         {entry.content}
         {preTokens ? ` — ${preTokens.toLocaleString()} tokens` : ""}
       </span>
-      <div className="flex-1 border-t border-dashed border-amber-500/40" />
+      <div className="flex-1 border-t border-dashed border-warning/45" />
     </div>
   );
 }
