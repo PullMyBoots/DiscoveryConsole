@@ -6,22 +6,23 @@ Pause your current work and synthesize the shared knowledge base. Your goal is t
 
 By the end of this consolidation, you should have created or updated at least one of:
 
-1. **A synthesis note** in `notes/_synthesis/` — distill multiple related notes into unified findings
-2. **The connections map** at `notes/_connections.md` — document patterns that span categories
-3. **The open questions list** at `notes/_open-questions.md` — gaps and unresolved contradictions
+1. **A synthesis note** in `knowledge/notes/_synthesis/` — distill multiple related notes into unified findings
+2. **The connections map** at `knowledge/notes/_connections.md` — document patterns that span categories
+3. **The open questions list** at `knowledge/notes/_open-questions.md` — gaps and unresolved contradictions
+4. **A capsule** in `knowledge/capsules/` — if the synthesis is actionable enough to guide future agents
 
 ### Process
 
 **Step 1: Read and absorb**
 
-Browse `{shared_dir}/notes/` and read notes you haven't seen or that have been updated. Build a mental map of what's known.
+Browse `{shared_dir}/knowledge/notes/`, `{shared_dir}/knowledge/maps/methods.md`, and the active packets under `{shared_dir}/knowledge/packs/`. Build a mental map of what's known without opening raw sources unless a note/capsule specifically requires it.
 
 **Step 2: Synthesize findings**
 
 For any topic with 3+ notes, create or update a synthesis note:
 
 ```
-notes/_synthesis/
+knowledge/notes/_synthesis/
   learning-rate-findings.md    # "Based on 12 experiments, warmup helps when batch > 64..."
   regularization-patterns.md   # "Dropout vs weight decay: use dropout for large models..."
   architecture-lessons.md      # "Attention > convolution for sequence tasks because..."
@@ -51,7 +52,7 @@ A good synthesis note:
 
 **Step 3: Map connections**
 
-Update `notes/_connections.md` with cross-category patterns:
+Update `knowledge/notes/_connections.md` with cross-category patterns:
 
 ```markdown
 # Knowledge Connections
@@ -67,7 +68,7 @@ Update `notes/_connections.md` with cross-category patterns:
 
 **Step 4: Document contradictions and gaps**
 
-Update `notes/_open-questions.md`:
+Update `knowledge/notes/_open-questions.md`:
 
 ```markdown
 # Open Questions
@@ -91,7 +92,7 @@ If the notes folder is disorganized (too many flat files, duplicates, naming iss
 bash {shared_dir}/skills/organize-files/scripts/audit.sh
 ```
 
-If the audit shows problems, follow the full process in `{shared_dir}/skills/organize-files/SKILL.md`. The skill provides scripts for deduplication, safe moves with frontmatter tracking, and index regeneration. Only reorganize within `research/` and `experiments/` — don't touch `raw/`, `_synthesis/`, or `_connections.md`.
+If the audit shows problems, follow the full process in `{shared_dir}/skills/organize-files/SKILL.md`. The skill provides scripts for deduplication, safe moves with frontmatter tracking, and index regeneration. Only reorganize within `knowledge/notes/research/` and `knowledge/notes/experiments/`; do not move `knowledge/inbox/`, `knowledge/capsules/`, or packet files unless the user/Codex review loop asks for it.
 
 **Step 6: Extract skills**
 
@@ -99,7 +100,7 @@ If a synthesis reveals a well-validated, reusable technique, promote it to `{sha
 
 **Step 7: Audit the team's roles, lanes, and postures**
 
-Read every agent's role file (`ls {shared_dir}/roles/*.md`) and every active focus note (`ls {shared_dir}/notes/focus-*.md`). Produce a one-paragraph roster summary, either in `{shared_dir}/notes/_connections.md` or as a dated entry in `{shared_dir}/notes/_synthesis/team-roster.md`. The summary should answer:
+Read every agent's role file (`ls {shared_dir}/roles/*.md`) and every active focus note (`ls {shared_dir}/knowledge/notes/focus-*.md`). Produce a one-paragraph roster summary, either in `{shared_dir}/knowledge/notes/_connections.md` or as a dated entry in `{shared_dir}/knowledge/notes/_synthesis/team-roster.md`. The summary should answer:
 
 - **Role coverage** — quote each agent's current role description (one line each) and their generation number. Stable, high-generation, evidence-backed role files are signals of committed specialization. Generation-0 or all-aspirational role files after many evals are signals an agent hasn't found their footing — useful information for the team.
 - **Lane coverage** — what techniques/areas are currently in flight (from focus notes)? Are two or more agents on the same lane? Are there obvious unexplored lanes from `_open-questions.md` that nobody is working on?
@@ -116,7 +117,7 @@ The goal is knowledge creation: every consolidation should leave the knowledge b
 ### Stamp authorship on every new note
 
 When you create a new note (synthesis, connections map, open-questions list,
-or anything under `notes/`), include `creator:` in the YAML frontmatter so
+or anything under `knowledge/notes/`), include `creator:` in the YAML frontmatter so
 the file is attributed to you. Use your own `agent_id` (read from
 `.coral_agent_id` if you don't already know it) and an ISO-8601 `created:`
 timestamp. Example:

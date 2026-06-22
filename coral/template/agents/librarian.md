@@ -24,14 +24,18 @@ When spawned, execute this process end-to-end and return a summary of what you c
 Survey the current state of shared knowledge:
 
 ```bash
-# Check notes structure
-ls -R .claude/notes/
+SHARED_DIR="${SHARED_DIR:-$(for d in .codex .claude .opencode .cursor .kiro; do [ -d "$d" ] && printf '%s' "$d" && break; done)}"
+SHARED_DIR="${SHARED_DIR:-.codex}"
+
+# Check lightweight knowledge structure
+ls -R "$SHARED_DIR/knowledge/notes/"
+ls "$SHARED_DIR/knowledge/capsules/" "$SHARED_DIR/knowledge/packs/" 2>/dev/null || true
 
 # Run the organize-files audit if available
-bash .claude/skills/organize-files/scripts/audit.sh 2>/dev/null || echo "audit script not found"
+bash "$SHARED_DIR/skills/organize-files/scripts/audit.sh" "$SHARED_DIR/knowledge/notes" 2>/dev/null || echo "audit script not found"
 
 # Check existing skills
-ls .claude/skills/
+ls "$SHARED_DIR/skills/"
 ```
 
 ### 2. Deduplicate Notes
@@ -39,33 +43,35 @@ ls .claude/skills/
 Find and merge near-duplicate notes:
 
 ```bash
-python .claude/skills/organize-files/scripts/find_duplicates.py .claude/notes --threshold 0.5 2>/dev/null || echo "dedup script not found, check manually"
+python "$SHARED_DIR/skills/organize-files/scripts/find_duplicates.py" "$SHARED_DIR/knowledge/notes" --threshold 0.5 2>/dev/null || echo "dedup script not found, check manually"
 ```
 
 - Merge confirmed duplicates into a single authoritative note
 - Preserve contradictory findings — flag them in `_open-questions.md`
-- Archive originals to `notes/_archive/`
+- Archive originals to `knowledge/notes/_archive/`
 
 ### 3. Reorganize
 
-Follow the `organize-files` skill workflow (`.claude/skills/organize-files/SKILL.md`):
+Follow the `organize-files` skill workflow (`$SHARED_DIR/skills/organize-files/SKILL.md`):
 
 - Group files into topic subdirectories under `research/` and `experiments/`
 - Enforce kebab-case naming, no agent IDs in filenames
 - Minimum 3 files per subdirectory, max 2 levels deep
 
 **Boundaries — do NOT touch:**
-- `notes/raw/` — immutable source material
-- `notes/_synthesis/` — owned by consolidate
-- `notes/_connections.md` — owned by consolidate
+- `knowledge/inbox/` — unreviewed raw source material
+- `knowledge/capsules/` — actionable compressed knowledge
+- `knowledge/packs/` — agent-specific reading packets
+- `knowledge/notes/_synthesis/` — owned by consolidate
+- `knowledge/notes/_connections.md` — owned by consolidate
 
 ### 4. Regenerate Index
 
 ```bash
-python .claude/skills/organize-files/scripts/generate_index.py .claude/notes 2>/dev/null
+python "$SHARED_DIR/skills/organize-files/scripts/generate_index.py" "$SHARED_DIR/knowledge/notes" 2>/dev/null
 ```
 
-Ensure `notes/index.md` reflects the current structure. If the script is not available, regenerate manually.
+Ensure `knowledge/notes/index.md` reflects the current structure. If the script is not available, regenerate manually.
 
 ### 5. Extract Skills
 
@@ -79,7 +85,7 @@ Package them in `.claude/skills/<name>/SKILL.md` with the standard skill format.
 
 ### 6. Log Changes
 
-Append a summary to `notes/_organization-log.md` describing what you reorganized and why.
+Append a summary to `knowledge/notes/_organization-log.md` describing what you reorganized and why.
 
 ## Guidelines
 

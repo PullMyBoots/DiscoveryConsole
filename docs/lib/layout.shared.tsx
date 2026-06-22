@@ -8,11 +8,11 @@ export function baseOptions(): BaseLayoutProps {
         <>
           <img
             src="/coral_logo.png"
-            alt="CORAL"
+            alt="DiscoveryConsole"
             style={{ width: 28, height: 28, objectFit: 'contain' }}
           />
           <span style={{ fontWeight: 700, fontSize: 17, letterSpacing: '0.02em' }}>
-            CORAL
+            DiscoveryConsole
           </span>
         </>
       ) as ReactNode,
@@ -20,9 +20,9 @@ export function baseOptions(): BaseLayoutProps {
     links: [
       {
         text: 'Blog',
-        url: 'https://human-agent-society.github.io/CORAL/',
+        url: 'https://github.com/PullMyBoots/DiscoveryConsole',
       },
     ],
-    githubUrl: 'https://github.com/Human-Agent-Society/CORAL',
+    githubUrl: 'https://github.com/PullMyBoots/DiscoveryConsole',
   };
 }

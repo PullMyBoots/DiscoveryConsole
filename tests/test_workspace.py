@@ -138,6 +138,9 @@ def test_create_project_snapshots_and_seeds_knowledge():
         assert (paths.snapshots_dir / "knowledge" / "sources" / "papers" / "paper-a" / "text.md").read_text() == "# Paper A\n"
         assert (paths.coral_dir / "public" / "knowledge" / "sources" / "papers" / "paper-a" / "text.md").read_text() == "# Paper A\n"
         assert (paths.coral_dir / "public" / "notes" / "research" / "method-a.md").read_text() == "# Method A\n"
+        assert (paths.coral_dir / "public" / "knowledge" / "capsules").is_dir()
+        assert (paths.coral_dir / "public" / "knowledge" / "maps" / "methods.md").is_file()
+        assert (paths.coral_dir / "public" / "knowledge" / "packs" / "global.md").is_file()
 
 
 def test_write_agent_id():

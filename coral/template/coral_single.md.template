@@ -25,11 +25,13 @@ Before you write any code, get oriented. Understand the problem, understand what
 4. Check recent activity: `coral log --recent`
 5. Inspect top attempts: `coral show <hash>` to see exactly what code produced the best scores.
 6. Search for prior art: `coral log --search "keywords related to your first idea"`
-7. Read notes: Start with `{shared_dir}/notes/index.md` for a map of all research and experiment notes, then read the ones relevant to your approach.
-8. Check available skills: `ls {shared_dir}/skills/` — you may have built tools in previous runs that you can reuse.
-9. **Read the `deep-research` skill** (`{shared_dir}/skills/deep-research/SKILL.md`) — use it to conduct literature review and research before your first implementation attempt.
-10. **Know the `organize-files` skill** (`{shared_dir}/skills/organize-files/SKILL.md`) — use it to restructure the notes directory when it becomes cluttered. Run `bash {shared_dir}/skills/organize-files/scripts/audit.sh` to check.
-11. Check available subagents: `ls {shared_dir}/agents/` — you can spawn specialist subagents (e.g. `deep-researcher` for literature review, `librarian` for notes cleanup).
+7. Read your knowledge packet first: `{shared_dir}/knowledge/packs/{agent_id}.md` if it exists, otherwise `{shared_dir}/knowledge/packs/global.md`.
+8. Follow the packet's capsule links before raw sources. Read `{shared_dir}/knowledge/notes/index.md` only for current run memory.
+9. Do not scan raw papers/repos/web captures by default. Open files under `{shared_dir}/knowledge/sources/` only when a packet/capsule or a concrete implementation decision requires it.
+10. Check available skills: `ls {shared_dir}/skills/` — you may have built tools in previous runs that you can reuse.
+11. **Read the `deep-research` skill** (`{shared_dir}/skills/deep-research/SKILL.md`) only when your packet does not already give enough route evidence.
+12. **Know the `organize-files` skill** (`{shared_dir}/skills/organize-files/SKILL.md`) — use it to restructure notes when they become cluttered. Run `bash {shared_dir}/skills/organize-files/scripts/audit.sh` to check.
+13. Check available subagents: `ls {shared_dir}/agents/` — you can spawn specialist subagents (e.g. `deep-researcher` for literature review, `librarian` for notes cleanup).
 
 Only after this orientation should you start making changes.
 
@@ -44,8 +46,8 @@ Before writing any code, think about what to try next. This is where your creati
 **Draw on available resources:**
 - Run `coral log -n 5` to see what's worked best so far. Look at top-scoring attempts — what do they have in common? What made them good?
 - Run `coral show <hash>` to inspect the diff of any interesting attempt — you can see exactly what code produced that score.
-- Check `coral notes` and `coral skills` for knowledge from previous runs.
-- Use web search to research techniques, algorithms, or approaches that might help.
+- Re-check your knowledge packet and its capsules before opening broader notes or sources.
+- Use web search only when the packet lacks evidence for your route; save new material under `{shared_dir}/knowledge/inbox/` and summarize it instead of pasting large context.
 
 **Think creatively:**
 - Can you combine the best parts of two different high-scoring approaches?
@@ -77,7 +79,7 @@ This stages all changes, commits with your message, and runs the grader. Write d
 **Eval often.** Don't spend a long time coding without evaluating. Every eval gives you real signal about what works. If you're unsure whether a change helps, just eval it — you can always revert or checkout a previous version.
 
 **After every eval**, think about what you learned and update your knowledge:
-- Update or create a **note** in `{shared_dir}/notes/` capturing what worked, what didn't, and why.
+- Update or create a **note** in `{shared_dir}/knowledge/notes/` capturing what worked, what didn't, and why.
 - Update or create a **skill** in `{shared_dir}/skills/` if you used a technique worth reusing.
 
 This is not optional — every eval should produce at least one note or skill update.
@@ -125,10 +127,10 @@ Notes about what you've discovered — things that help you (or future agents) m
 - Patterns in what scores well vs. poorly
 - Debugging tips, gotchas, or surprising behavior
 
-Write notes as individual files in `{shared_dir}/notes/`. Use short, descriptive, topic-based filenames in kebab-case — e.g. `gradient-clipping-helps.md`, `batch-size-vs-lr-tradeoff.md`. **Never** include agent IDs, eval numbers, or attempt hashes in filenames. Authorship belongs in the `creator` frontmatter field, not the filename.
+Write notes as individual files in `{shared_dir}/knowledge/notes/`. Use short, descriptive, topic-based filenames in kebab-case — e.g. `gradient-clipping-helps.md`, `batch-size-vs-lr-tradeoff.md`. **Never** include agent IDs, eval numbers, or attempt hashes in filenames. Authorship belongs in the `creator` frontmatter field, not the filename.
 
 ```
-cat > {shared_dir}/notes/your-finding.md << 'EOF'
+cat > {shared_dir}/knowledge/notes/your-finding.md << 'EOF'
 ---
 creator: {agent_id}
 created: $(date -Iseconds)
@@ -190,7 +192,7 @@ Go back to Step {plan_step_num}. Keep iterating. When you run out of obvious ide
 | Path | Contents |
 |------|----------|
 | `.coral/attempts/*.json` | Scored commits (your history) |
-| `{shared_dir}/notes/*.md` | Findings and observations |
+| `{shared_dir}/knowledge/notes/*.md` | Findings and observations |
 | `{shared_dir}/skills/*/` | Reusable skills (SKILL.md + scripts/ + examples/) |
 | `{shared_dir}/agents/*.md` | Specialist subagent definitions |
 

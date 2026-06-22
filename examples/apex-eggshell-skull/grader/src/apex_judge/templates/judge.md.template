@@ -155,7 +155,7 @@ These files will be cleaned up after evaluation.
 | Path | Contents |
 |------|----------|
 | `.coral/attempts/*.json` | Scored commits (agent commit history) |
-| `{shared_dir}/notes/*.md` | Findings and observations |
+| `{shared_dir}/knowledge/notes/*.md` | Findings and observations |
 | `{shared_dir}/skills/*/` | Reusable skills (SKILL.md + scripts/ + examples/) |
 
 ### CLI

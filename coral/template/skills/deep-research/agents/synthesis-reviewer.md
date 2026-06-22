@@ -15,7 +15,7 @@ You have one job: walk every substantive claim and verdict it against the cited 
 You receive these parameters in your prompt:
 
 - **research_note_path**: Absolute path to the .md research note to verify.
-- **raw_sources_dir**: Absolute path to the `notes/raw/` directory containing source files.
+- **raw_sources_dir**: Absolute path to the `knowledge/inbox/` directory containing captured source files.
 - **output_path**: Where to save the verdict JSON (typically alongside the research note as `<note-slug>.review.json`).
 
 The note's frontmatter should list the raw sources it draws from (in `references` or via `## References` in the body). If neither exists, treat that as a finding (the note has no claimable grounding).
@@ -80,27 +80,27 @@ Save results to `output_path` in the format below. Do not modify the research no
   "note_path": "research/attention/flash-attention.md",
   "title": "Flash Attention",
   "sources_checked": [
-    "raw/papers/dao-2022-flashattention.md",
-    "raw/blog/tri-dao-flashattention-explainer.md"
+    "knowledge/inbox/papers/dao-2022-flashattention.md",
+    "knowledge/inbox/blog/tri-dao-flashattention-explainer.md"
   ],
   "missing_sources": [],
   "claims": [
     {
       "text": "Flash Attention reduces HBM accesses by tiling the attention matrix.",
       "verdict": "grounded",
-      "source": "raw/papers/dao-2022-flashattention.md",
+      "source": "knowledge/inbox/papers/dao-2022-flashattention.md",
       "evidence": "Section 3.1: 'We tile the K, V matrices along the sequence dimension and compute attention block by block, reducing HBM reads from O(N^2) to O(N^2/M).'"
     },
     {
       "text": "It achieves 3x speedup on GPT-2 training.",
       "verdict": "partially-grounded",
-      "source": "raw/papers/dao-2022-flashattention.md",
+      "source": "knowledge/inbox/papers/dao-2022-flashattention.md",
       "evidence": "Paper reports 2.4x on GPT-2 small and 3.5x on GPT-2 medium. Note's '3x' is an average that wasn't stated in the source — risk of misciting if a reader looks for the exact figure."
     },
     {
       "text": "It is implemented in Triton.",
       "verdict": "contradicted",
-      "source": "raw/papers/dao-2022-flashattention.md",
+      "source": "knowledge/inbox/papers/dao-2022-flashattention.md",
       "evidence": "Section 4: 'We implement Flash Attention in CUDA.' The note may be conflating with the later community Triton port."
     },
     {
@@ -113,7 +113,7 @@ Save results to `output_path` in the format below. Do not modify the research no
   "note_level_findings": [
     {
       "type": "source-not-used",
-      "detail": "raw/blog/tri-dao-flashattention-explainer.md is listed in references but no claim in the note draws from it."
+      "detail": "knowledge/inbox/blog/tri-dao-flashattention-explainer.md is listed in references but no claim in the note draws from it."
     }
   ],
   "summary": {

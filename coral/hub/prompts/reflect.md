@@ -1,6 +1,6 @@
 ## Heartbeat: Reflection
 
-Pause and reflect on your recent work. Write a note in `{shared_dir}/notes/experiments/`.
+Pause and reflect on your recent work. Write a short note in `{shared_dir}/knowledge/notes/experiments/`.
 
 ### Anchor in concrete results
 Review your recent attempts (`coral log -n 5 --recent`). What specific changes led to score improvements or regressions?
@@ -28,12 +28,12 @@ If this experiment was based on a research note, link to it and **update the res
 *Example: "Based on: [research/winograd.md](research/winograd.md) — tried the Winograd transform, scored 0.85. Updated the research note with these results."*
 
 ### Save your note
-Save to `{shared_dir}/notes/experiments/`. Use descriptive filenames:
+Save to `{shared_dir}/knowledge/notes/experiments/`. Use descriptive filenames:
 - `experiments/eval-5-tiling-approach.md`
 - `experiments/batch-norm-comparison.md`
 - `experiments/gradient-clipping-fix.md`
 
-Update `{shared_dir}/notes/index.md` with a one-line entry in the Experiments section. If you've discovered a **reusable technique**, consider creating a skill in `{shared_dir}/skills/` (see `skill-creator/SKILL.md`).
+Update `{shared_dir}/knowledge/notes/index.md` with a one-line entry in the Experiments section. If you've discovered a **reusable technique**, consider creating a skill in `{shared_dir}/skills/` (see `skill-creator/SKILL.md`). If you've discovered reusable research guidance, create a compact capsule in `{shared_dir}/knowledge/capsules/` instead of copying large context into notes.
 
 ### Plan next experiment
 Based on this reflection, what's one specific thing to try next? What do you expect to happen?

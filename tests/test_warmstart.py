@@ -36,14 +36,16 @@ def test_enabled_property():
 def test_research_prompt_contains_shared_dir():
     runner = WarmStartRunner(_make_config(), shared_dir=".claude")
     prompt = runner.research_prompt()
-    assert ".claude/notes/" in prompt
+    assert ".claude/knowledge/inbox/" in prompt
+    assert ".claude/knowledge/capsules/" in prompt
+    assert ".claude/knowledge/notes/" in prompt
     assert "Do NOT" in prompt
 
 
 def test_research_prompt_different_shared_dir():
     runner = WarmStartRunner(_make_config(), shared_dir=".opencode")
     prompt = runner.research_prompt()
-    assert ".opencode/notes/" in prompt
+    assert ".opencode/knowledge/notes/" in prompt
 
 
 # --- Main prompt tests ---
@@ -52,11 +54,12 @@ def test_research_prompt_different_shared_dir():
 def test_main_prompt_references_notes():
     runner = WarmStartRunner(_make_config(), shared_dir=".claude")
     prompt = runner.main_prompt()
-    assert ".claude/notes/" in prompt
+    assert ".claude/knowledge/packs/" in prompt
+    assert ".claude/knowledge/notes/" in prompt
     assert "Begin" in prompt
 
 
 def test_main_prompt_different_shared_dir():
     runner = WarmStartRunner(_make_config(), shared_dir=".codex")
     prompt = runner.main_prompt()
-    assert ".codex/notes/" in prompt
+    assert ".codex/knowledge/notes/" in prompt

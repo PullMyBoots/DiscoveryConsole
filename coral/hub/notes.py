@@ -1,4 +1,4 @@
-"""Read/list/search notes from .coral/public/notes/ directory.
+"""Read/list/search notes from the shared notes directory.
 
 Notes are individual Markdown files with optional YAML frontmatter:
 
@@ -9,7 +9,9 @@ Notes are individual Markdown files with optional YAML frontmatter:
     # Title of the note
     Body text with findings, numbers, conclusions...
 
-Legacy format (single notes.md with ## headings) is also supported.
+New workspaces expose notes at ``.coral/public/knowledge/notes`` and keep
+``.coral/public/notes`` as a compatibility alias. Legacy format (single
+notes.md with ## headings) is also supported.
 """
 
 from __future__ import annotations

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # audit.sh — Quick read-only audit of a notes directory.
 # Usage: bash audit.sh [NOTES_DIR]
-# Defaults to .coral/public/notes if no argument given.
+# Defaults to .coral/public/knowledge/notes if no argument given.
 # This script NEVER modifies any files.
 
 set -euo pipefail
 
-NOTES_DIR="${1:-.coral/public/notes}"
+NOTES_DIR="${1:-.coral/public/knowledge/notes}"
 
 if [ ! -d "$NOTES_DIR" ]; then
     echo "Directory not found: $NOTES_DIR"

@@ -18,7 +18,7 @@ If multiple agents are all stuck at the same score, do **not** read that as proo
 
 Read — don't skim — the team's open questions and "what might still work" sections.
 
-- Open `{shared_dir}/notes/index.md` and any `_synthesis/` notes. Find the section that lists *what has not been tried*.
+- Open `{shared_dir}/knowledge/packs/{agent_id}.md`, `{shared_dir}/knowledge/notes/index.md`, and any synthesis notes. Find the section that lists *what has not been tried*.
 - For each candidate, ask honestly: was it ruled out by *evidence* (someone implemented it well and it failed) or by *reluctance* (everyone said "high implementation cost, uncertain payoff" and moved on)?
 - The candidates ruled out by reluctance are your shortlist. Pick the one with the highest plausible payoff.
 
@@ -38,7 +38,7 @@ If you abandon the direction before eval 3, you have not actually tested it.
 
 ### Step 4: Claim the lane and the posture
 
-Write a focus note at `{shared_dir}/notes/focus-<short-topic>.md` declaring:
+Write a focus note at `{shared_dir}/knowledge/notes/focus-<short-topic>.md` declaring:
 
 - **Posture** — what functional role you are playing for the team (engineer / researcher / performance engineer / tooling engineer / reviewer / tech writer). See the *Postures* section of CORAL.md for definitions. Pick the posture that is **most missing** from the current team, not the most comfortable.
 - **Lane** — the specific technique, area, or composite you are attempting.
@@ -48,7 +48,7 @@ Write a focus note at `{shared_dir}/notes/focus-<short-topic>.md` declaring:
 
 This is the contract you are making with the team. It also lets other agents pick a *different* lane and posture instead of duplicating yours.
 
-**Posture imbalance is itself a pivot reason.** Read the active focus notes (`ls {shared_dir}/notes/focus-*.md`). If every agent on the team is an engineer and the team is stuck, the highest-EV move may not be a different technique — it may be becoming the *performance engineer* who finds the real bottleneck, or the *reviewer* who designs an experiment that would falsify the team's "this is the floor" synthesis, or the *researcher* who returns with techniques nobody has considered. Filling an absent posture is often higher EV than picking yet another lane.
+**Posture imbalance is itself a pivot reason.** Read the active focus notes (`ls {shared_dir}/knowledge/notes/focus-*.md`). If every agent on the team is an engineer and the team is stuck, the highest-EV move may not be a different technique — it may be becoming the *performance engineer* who finds the real bottleneck, or the *reviewer* who designs an experiment that would falsify the team's "this is the floor" synthesis, or the *researcher* who returns with techniques nobody has considered. Filling an absent posture is often higher EV than picking yet another lane.
 
 ### Step 5: Start from the right base
 

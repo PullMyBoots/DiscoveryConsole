@@ -99,6 +99,9 @@ def test_prepare_knowledge_script_creates_required_skeleton(tmp_path):
     )
 
     expected_dirs = [
+        "capsules",
+        "maps",
+        "packs",
         "sources/papers",
         "sources/repos",
         "sources/web",
@@ -116,6 +119,9 @@ def test_prepare_knowledge_script_creates_required_skeleton(tmp_path):
     ]
     for rel in expected_dirs:
         assert (knowledge_dir / rel).is_dir(), rel
+    assert "Read Order" in (knowledge_dir / "index.md").read_text()
+    assert "Active Routes" in (knowledge_dir / "maps" / "methods.md").read_text()
+    assert "Global Knowledge Packet" in (knowledge_dir / "packs" / "global.md").read_text()
     assert "Breakthrough Metrics" in (knowledge_dir / "eval_spec.md").read_text()
     assert (knowledge_dir / "manifest.jsonl").read_text() == ""
 
@@ -136,6 +142,9 @@ def test_prepare_agent_plan_script_writes_concrete_briefs(tmp_path):
                         "island_id": "0",
                         "title": "Sparse Optimizer",
                         "brief": "Start from sparse baseline.",
+                        "must_read": ["capsules/method.sparse.md"],
+                        "optional_read": ["capsules/repo.sparse-ref.md"],
+                        "eval_targets": ["breakthrough.score"],
                         "focus": ["fast iteration"],
                         "starting_steps": ["Run quick eval"],
                         "avoid": ["Changing eval files"],
@@ -161,12 +170,20 @@ def test_prepare_agent_plan_script_writes_concrete_briefs(tmp_path):
 
     island = (knowledge_dir / "briefs" / "islands" / "0.md").read_text()
     agent = (knowledge_dir / "briefs" / "agent-seeds" / "0-agent-1.md").read_text()
+    packet = (knowledge_dir / "packs" / "0-agent-1.md").read_text()
     assert "# Sparse Search" in island
     assert "island_id: 0" in island
     assert "# Sparse Optimizer" in agent
+    assert "Knowledge packet: `knowledge/packs/0-agent-1.md`" in agent
     assert "## Initial Direction" in agent
     assert "- Run quick eval" in agent
     assert "- Changing eval files" in agent
+    assert "# Knowledge Packet: Sparse Optimizer" in packet
+    assert "- `eval_spec.md`" in packet
+    assert "- capsules/method.sparse.md" in packet
+    assert "- capsules/repo.sparse-ref.md" in packet
+    assert "- breakthrough.score" in packet
+    assert "Prefer the capsules named here" in packet
 
 
 def test_prepare_agent_plan_rejects_empty_islands(tmp_path):

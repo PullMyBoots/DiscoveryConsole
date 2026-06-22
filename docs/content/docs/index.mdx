@@ -1,6 +1,6 @@
 ---
-title: CORAL Documentation
-description: An organization for autonomous AI agents — spawn agents, run experiments, share knowledge, and loop forever.
+title: DiscoveryConsole Documentation
+description: A human-in-the-loop research workbench for Codex-led multi-agent search.
 ---
 
 ## Core Pattern
@@ -9,7 +9,7 @@ description: An organization for autonomous AI agents — spawn agents, run expe
 Spawn agents → agents read CORAL.md → commit changes → eval runs → repeat
 ```
 
-CORAL manages the full lifecycle: creating isolated workspaces, generating agent instructions, running evaluations, and collecting results.
+DiscoveryConsole builds on CORAL to manage the full lifecycle: creating isolated workspaces, generating agent instructions, running evaluations, and collecting results.
 
 ## How It Works
 
@@ -26,14 +26,14 @@ Each agent:
   → Runs `coral eval -m "description"`
   → Eval writes attempt JSON to .coral/attempts/
   → Agent sees score, decides next move
-  → Shares notes in .coral/notes/
+  → Shares notes in .coral/public/knowledge/notes/
   → Packages tools as skills in .coral/skills/
 ```
 
 ## Key Concepts
 
 - **Agents are the optimizers** — Claude Code, Codex, or OpenCode subprocesses working in git worktrees
-- **Shared state via `.coral/`** — attempts, notes, skills symlinked into each worktree
+- **Shared state via `.coral/`** — attempts, knowledge, notes, and skills symlinked into each worktree
 - **Eval loop** — agents call `coral eval -m "..."` to stage, commit, and grade
 - **CLI orchestration** — `coral start/stop/status/eval/log` and more
 - **Web dashboard** — `coral ui` for real-time monitoring

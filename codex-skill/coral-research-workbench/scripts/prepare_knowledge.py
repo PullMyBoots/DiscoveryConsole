@@ -7,6 +7,9 @@ import argparse
 from pathlib import Path
 
 SUBDIRS = (
+    "capsules",
+    "maps",
+    "packs",
     "sources/papers",
     "sources/repos",
     "sources/web",
@@ -33,17 +36,21 @@ def prepare(path: Path) -> None:
     if not index.exists():
         index.write_text(
             "# Knowledge Index\n\n"
-            "## Start Here\n"
+            "## Read Order\n"
+            "1. Start with the relevant `packs/<agent-id>.md` file.\n"
+            "2. Open only the capsules named by that packet.\n"
+            "3. Read raw files under `sources/` only when a capsule says the raw source is needed.\n\n"
+            "## Start Here For Codex\n"
             "- Add task context in `briefs/task-context.md`.\n"
             "- Fill the eval trust design in `eval_spec.md` before launch.\n"
             "- Add agent launch briefs in `briefs/agent-seeds/`.\n"
             "- Add multi-island themes in `briefs/islands/` when islands are enabled.\n"
-            "- Add research summaries in `notes/research/`.\n"
+            "- Convert useful sources into lightweight capsules in `capsules/`.\n"
+            "- Generate per-agent reading packets in `packs/`.\n"
             "- Add experiment reflections in `notes/experiments/`.\n\n"
-            "## Sources\n"
-            "- Papers: `sources/papers/`\n"
-            "- Repositories: `sources/repos/`\n"
-            "- Web/docs/datasets: `sources/`\n"
+            "## Active Maps\n"
+            "- Method routes: `maps/methods.md`\n"
+            "- Run notes: `notes/index.md`\n"
         )
 
     eval_spec = path / "eval_spec.md"
@@ -81,6 +88,30 @@ def prepare(path: Path) -> None:
             "- (none yet)\n\n"
             "## Open Questions\n"
             "- (none yet)\n"
+        )
+
+    methods_map = path / "maps" / "methods.md"
+    if not methods_map.exists():
+        methods_map.write_text(
+            "# Method Map\n\n"
+            "Keep this file short. List only active method families that should guide agent search.\n\n"
+            "## Active Routes\n"
+            "- (none yet)\n\n"
+            "## Failed Or Risky Routes\n"
+            "- (none yet)\n"
+        )
+
+    global_pack = path / "packs" / "global.md"
+    if not global_pack.exists():
+        global_pack.write_text(
+            "# Global Knowledge Packet\n\n"
+            "This is the shared lightweight entry point. Agent-specific packets should stay smaller.\n\n"
+            "## Always Read\n"
+            "- `eval_spec.md`\n"
+            "- `maps/methods.md`\n"
+            "- `notes/index.md`\n\n"
+            "## Source Rule\n"
+            "Prefer capsules over raw sources. Put newly found material in `inbox/` until reviewed.\n"
         )
 
 

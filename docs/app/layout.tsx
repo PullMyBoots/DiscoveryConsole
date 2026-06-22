@@ -4,11 +4,11 @@ import './global.css';
 
 export const metadata = {
   title: {
-    default: 'CORAL Documentation',
-    template: '%s | CORAL',
+    default: 'DiscoveryConsole Documentation',
+    template: '%s | DiscoveryConsole',
   },
   description:
-    'An organization for autonomous AI agents — spawn agents, run experiments, share knowledge, and loop forever.',
+    'A human-in-the-loop research workbench for Codex-led multi-agent search.',
 };
 
 export default function Layout({ children }: { children: ReactNode }) {

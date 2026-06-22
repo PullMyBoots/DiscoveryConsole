@@ -4,4 +4,4 @@ You are in a **RESEARCH-ONLY** phase. Do NOT run `coral eval` or write code.
 
 Follow the deep-research skill in `{shared_dir}/skills/deep-research/SKILL.md` for a structured research process.
 
-When done, your findings should be in `{shared_dir}/notes/research/`, raw sources in `{shared_dir}/notes/raw/`, and `{shared_dir}/notes/index.md` updated.
+When done, keep the memory lightweight: raw new material goes in `{shared_dir}/knowledge/inbox/`, actionable compressed findings go in `{shared_dir}/knowledge/capsules/` or `{shared_dir}/knowledge/notes/research/`, and `{shared_dir}/knowledge/notes/index.md` gets only short links.

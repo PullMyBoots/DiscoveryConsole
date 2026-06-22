@@ -53,6 +53,28 @@ Each brief should include:
 
 Keep briefs short enough to be injected into the agent context without becoming a paper.
 
+## Knowledge Packets
+
+Store per-agent knowledge packets under:
+
+```text
+knowledge/packs/<agent-id>.md
+```
+
+Packets are the lightweight memory entry point for agents. They should not copy
+paper summaries, repo walkthroughs, or long notes. Instead, each packet should
+name the few capsules and indexes that are relevant to that agent's route:
+
+- route hypothesis
+- `eval_spec.md`, `maps/methods.md`, and `notes/index.md`
+- must-read capsule paths
+- optional capsule paths
+- eval targets the route is meant to improve or protect
+- raw-source rule: open `sources/` only for a concrete decision
+
+If a route needs substantial background, create a capsule and link it from the
+packet. Do not make agents discover the same large source independently.
+
 ## Island Themes
 
 Store island themes under:

@@ -70,13 +70,13 @@ Recovery procedures and judgment calls for situations the main flow doesn't cove
 
 ## A research note has zero `## References`
 
-**Symptom:** `research/foo.md` contains synthesis but no `## References` section, or references that don't link to any `raw/` file.
+**Symptom:** `research/foo.md` contains synthesis but no `## References` section, or references that don't link to any `knowledge/inbox/` source or capsule.
 
 **Diagnosis:** either citations were stripped during a bad merge, or the original author skipped them.
 
 **Action:**
-1. Search `raw/` for any file whose title or topic matches the note's subject. Likely candidates: same author, similar title, recently captured.
-2. Search the note body for inline mentions ("the X paper showed...", "as Smith et al. argue...") that suggest a specific source. Try to find that raw file.
+1. Search `knowledge/inbox/` for any file whose title or topic matches the note's subject. Likely candidates: same author, similar title, recently captured.
+2. Search the note body for inline mentions ("the X paper showed...", "as Smith et al. argue...") that suggest a specific source. Try to find that inbox source or a capsule derived from it.
 3. If you can't trace any source, mark `confidence: low` in the note's frontmatter and flag in `_open-questions.md` — *"Note `foo.md` has unverified claims; sources missing."*
 
 **Don't:** silently delete the note. Unverified content with a `confidence: low` flag is more valuable than nothing — it tells future agents what someone once thought, even if poorly grounded.
@@ -98,20 +98,20 @@ Recovery procedures and judgment calls for situations the main flow doesn't cove
 
 ---
 
-## A `raw/` file is referenced from many research notes
+## An inbox source is referenced from many research notes
 
-**Symptom:** Your reorganization renames `research/foo.md` to `research/topic/foo.md`, but `raw/source.md` is referenced from `foo.md` and four other notes. The path `../raw/source.md` was correct from the old location but now needs to be `../../raw/source.md`.
+**Symptom:** Your reorganization renames `research/foo.md` to `research/topic/foo.md`, but `knowledge/inbox/source.md` is referenced from `foo.md` and four other notes. The path `../../inbox/source.md` was correct from the old location but now needs a different relative depth.
 
 **Diagnosis:** relative-path links break when depth changes.
 
 **Action:**
 1. After moves complete, run `resolve_links.py` — it handles `[[wikilinks]]`.
-2. For markdown-style relative links (`[source](../raw/foo.md)`), grep for the broken pattern and fix manually:
+2. For markdown-style relative links (`[source](../../inbox/foo.md)`), grep for the broken pattern and fix manually:
    ```bash
-   grep -r "(../raw/" notes/research/ | grep -v "/$"
+   grep -r "(../../inbox/" knowledge/notes/research/ | grep -v "/$"
    # find every old-path link, fix the depth
    ```
-3. Better: convert relative-path links to wiki-style `[[raw-source-slug]]` so `resolve_links.py` can maintain them automatically. Wiki-style is path-independent.
+3. Better: cite a capsule in `knowledge/capsules/` when one exists, and keep raw inbox links only as provenance. Wiki-style is path-independent.
 
 **Don't:** assume the resolver fixes markdown-style relative links. It only resolves wiki-style.
 

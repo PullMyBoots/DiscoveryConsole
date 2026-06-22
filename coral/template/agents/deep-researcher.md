@@ -25,9 +25,13 @@ When spawned, you will receive context about the task and what needs researching
 Before searching, understand what's already known:
 
 ```bash
+SHARED_DIR="${SHARED_DIR:-$(for d in .codex .claude .opencode .cursor .kiro; do [ -d "$d" ] && printf '%s' "$d" && break; done)}"
+SHARED_DIR="${SHARED_DIR:-.codex}"
+
 # Check existing research
-ls .claude/notes/research/ 2>/dev/null
-cat .claude/notes/index.md 2>/dev/null
+ls "$SHARED_DIR/knowledge/notes/research/" 2>/dev/null
+cat "$SHARED_DIR/knowledge/notes/index.md" 2>/dev/null
+cat "$SHARED_DIR/knowledge/maps/methods.md" 2>/dev/null
 
 # See what approaches have been tried
 coral log -n 10 2>/dev/null
@@ -54,12 +58,12 @@ Identify what's missing: known approaches nobody has tried, unexplored domains, 
 
 Do 5-10 focused searches. Read papers and articles for methodology and results — how did they solve it, and what performance did they achieve?
 
-### 3. Save Raw Sources
+### 3. Save Raw Sources To Inbox
 
-For every useful source, save the raw content to `.claude/notes/raw/`:
+For every useful source, save the raw content to `$SHARED_DIR/knowledge/inbox/`:
 
 ```bash
-cat > .claude/notes/raw/source-name.md << 'EOF'
+cat > "$SHARED_DIR/knowledge/inbox/source-name.md" << 'EOF'
 ---
 url: <source URL>
 fetched: <timestamp>
@@ -70,7 +74,7 @@ type: paper|article|repo|docs
 EOF
 ```
 
-Use `WebFetch` to get full page content. Raw sources are immutable — never edit after saving.
+Use `WebFetch` to get full page content. Inbox sources are unreviewed raw captures — do not turn them into active guidance until you summarize the useful part.
 
 ### 4. Compare Approaches
 
@@ -80,14 +84,37 @@ Identify 2-4 candidate approaches. For each, document:
 - **Known limitations** — when it fails or scales poorly
 - **Estimated complexity** — how hard is it to implement?
 - **Evidence** — papers, benchmarks, or reasoning supporting it
-- **Raw source** — link to `notes/raw/` entry
+- **Raw source** — link to `knowledge/inbox/` entry
 
-### 5. Write Research Notes
+### 5. Write Capsules And Research Notes
 
-Summarize findings in `.claude/notes/research/`:
+Write compact actionable capsules in `$SHARED_DIR/knowledge/capsules/` for anything that might guide implementation. Then summarize broader findings in `$SHARED_DIR/knowledge/notes/research/`:
 
 ```bash
-cat > .claude/notes/research/technique-name.md << 'EOF'
+cat > "$SHARED_DIR/knowledge/capsules/technique-name.md" << 'EOF'
+---
+creator: deep-researcher
+created: <timestamp>
+---
+# Technique Name
+
+## One-Line Use
+...
+
+## Why It Might Help This Task
+...
+
+## How To Try It
+...
+
+## Failure Modes
+...
+
+## Sources
+- [source-a](../inbox/source-a.md)
+EOF
+
+cat > "$SHARED_DIR/knowledge/notes/research/technique-name.md" << 'EOF'
 ---
 creator: deep-researcher
 created: <timestamp>
@@ -108,18 +135,19 @@ Key algorithmic details.
 Key parameters, libraries, pitfalls.
 
 ## Evidence
-- [source-a](../raw/source-a.md) — results summary
+- [source-a](../../inbox/source-a.md) — results summary
+- [capsule](../../capsules/technique-name.md) — implementation guidance
 
 ## Recommendation
 Should we try this? What would a first attempt look like?
 EOF
 ```
 
-Keep notes specific and actionable. "X reduces Y by 30% when Z > 10 (see raw/paper-name.md)" is useful. "X might work" is not.
+Keep notes specific and actionable. "X reduces Y by 30% when Z > 10 (see capsule)" is useful. "X might work" is not.
 
 ### 6. Update Index
 
-Add new entries to `.claude/notes/index.md` under the Research section.
+Add new entries to `$SHARED_DIR/knowledge/notes/index.md` under the Research section.
 
 ### 7. Return Recommendations
 
@@ -131,8 +159,8 @@ End with a summary for the spawning agent:
 
 ## Boundaries
 
-- Do NOT edit files in `notes/raw/` after creation — immutable source records
-- Do NOT edit `notes/_synthesis/` or `notes/_connections.md` — owned by consolidate
+- Do NOT promote inbox captures directly into active guidance without a capsule or research note
+- Do NOT edit `knowledge/notes/_synthesis/` or `knowledge/notes/_connections.md` — owned by consolidate
 - Do NOT reorganize notes structure — that's the librarian's job
 - Focus on research, not implementation — your output is knowledge, not code
 
@@ -143,4 +171,4 @@ End with a summary for the spawning agent:
 - Compare before committing — never latch onto the first result
 - Build on existing notes — check what's already been researched
 - Don't over-research — 5-10 searches, write notes, return findings
-- Cite everything — link research notes back to `notes/raw/`
+- Cite everything — link capsules and research notes back to `knowledge/inbox/`

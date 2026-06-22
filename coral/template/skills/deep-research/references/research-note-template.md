@@ -1,6 +1,6 @@
 # Research Note Template
 
-Use this when writing notes to `notes/research/`.
+Use this when writing notes to `knowledge/notes/research/`.
 
 ```markdown
 ---
@@ -24,7 +24,7 @@ tags: [research]
 
 ### Approach A: [Name]
 - **Description**: ...
-- **Evidence**: [paper/benchmark] — see [raw/source.md](../raw/source.md)
+- **Evidence**: [paper/benchmark] — see [inbox source](../../inbox/source.md) and the related capsule when available
 - **Pros**: ...
 - **Cons**: ...
 
@@ -39,7 +39,7 @@ tags: [research]
 - Eval N: scored X — [what worked, what didn't]
 
 ## References
-- [Title](../raw/source-name.md) — one-line summary
+- [Title](../../inbox/source-name.md) — one-line summary
 ```
 
 **Tips:**

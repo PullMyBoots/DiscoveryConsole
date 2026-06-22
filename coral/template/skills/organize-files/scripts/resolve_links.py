@@ -20,7 +20,7 @@ Skips:
 Title source: the YAML `title:` field of each note's frontmatter. Notes
 without a title are silently ignored.
 
-Excluded directories: raw/, _archive/, _synthesis/, and anything else
+Excluded directories: _archive/, _synthesis/, and anything else
 matching --exclude.
 
 Usage:
@@ -40,7 +40,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-EXCLUDED_DIRS_DEFAULT = {"raw", "_archive", "_synthesis"}
+EXCLUDED_DIRS_DEFAULT = {"_archive", "_synthesis"}
 FRONTMATTER_DELIMITER = "---"
 WORD_BOUNDARY_CHARS = set(" \t\n,.:;!?()[]{}/\"'")
 

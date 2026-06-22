@@ -189,8 +189,8 @@ def main() -> None:
     parser.add_argument(
         "notes_dir",
         nargs="?",
-        default=".coral/public/notes",
-        help="Path to notes directory (default: .coral/public/notes)",
+        default=".coral/public/knowledge/notes",
+        help="Path to notes directory (default: .coral/public/knowledge/notes)",
     )
     parser.add_argument(
         "--threshold", type=float, default=0.5, help="Similarity threshold 0.0-1.0 (default: 0.5)"

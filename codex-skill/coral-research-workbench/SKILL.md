@@ -83,6 +83,18 @@ Create or update the CORAL task directory:
 
 Use `scripts/prepare_knowledge.py` when a skeleton is needed. Put startup papers, repos, docs, datasets, method briefs, and task context under `knowledge/` before launch. Add each source to `knowledge/manifest.jsonl` with provenance and version/checksum when available.
 
+Keep the memory system lightweight. Raw materials belong in `knowledge/sources/`
+or `knowledge/inbox/`, but agent-facing guidance should be short capsules and
+per-agent packets:
+
+- `knowledge/capsules/*.md`: compressed, actionable knowledge from papers,
+  repos, docs, datasets, web captures, or run notes.
+- `knowledge/maps/methods.md`: compact route map that links to capsules.
+- `knowledge/packs/<agent-id>.md`: the small reading set for one agent.
+
+Agents should read their packet first, then the named capsules, and open raw
+sources only when a concrete implementation or eval decision requires it.
+
 Read `references/workspace-contract.md` before changing run layout, knowledge paths, timestamp behavior, or baseline recording.
 
 ### 3. Design the Eval Before Agents Run
@@ -112,6 +124,8 @@ Generate differentiated routes:
 - migration defaults when islands are enabled
 
 Use `scripts/prepare_agent_plan.py` after Codex has chosen the concrete routes. Only after this plan exists should the user tune runtime/model/resource controls.
+The script should also create agent knowledge packets so route-specific context
+is selected before launch rather than discovered by every agent independently.
 
 Read `references/agent-plan-contract.md` before changing agent initialization, island topology, or migration behavior.
 

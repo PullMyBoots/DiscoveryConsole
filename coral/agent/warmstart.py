@@ -54,14 +54,14 @@ class WarmStartRunner:
         # Fallback if template file is missing
         return (
             "Research the task thoroughly using web search. "
-            f"Write findings to `{sd}/notes/`. "
+            f"Write compressed findings to `{sd}/knowledge/capsules/` and notes to `{sd}/knowledge/notes/`. "
             "Do NOT run `coral eval` or write code."
         )
 
     def main_prompt(self, shared_dir: str | None = None) -> str:
         """Return the prompt for the main coding phase after research."""
         sd = shared_dir or self.shared_dir
-        return f"Begin. Review the research notes in `{sd}/notes/` before coding."
+        return f"Begin. Review `{sd}/knowledge/packs/`, capsules, and `{sd}/knowledge/notes/` before coding."
 
     def wait_for_research(self, handles: list[AgentHandle], poll_interval: int = 3) -> None:
         """Block until all research-phase agents have exited."""

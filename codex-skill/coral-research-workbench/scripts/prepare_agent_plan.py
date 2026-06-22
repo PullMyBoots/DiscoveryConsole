@@ -13,6 +13,8 @@ Use a JSON plan when Codex has generated concrete directions:
       "island_id": "0",
       "title": "Sparse baseline optimizer",
       "brief": "Start from the baseline and tune sparse parameters.",
+      "must_read": ["capsules/method.sparse-baseline.md"],
+      "optional_read": ["capsules/repo.reference-implementation.md"],
       "focus": ["fast iteration", "simple ablations"],
       "starting_steps": ["Run quick eval", "Change one variable at a time"],
       "avoid": ["changing eval files"]
@@ -50,8 +52,10 @@ def write_plan(
     briefs_dir = knowledge_dir / "briefs"
     agent_dir = briefs_dir / "agent-seeds"
     island_dir = briefs_dir / "islands"
+    pack_dir = knowledge_dir / "packs"
     agent_dir.mkdir(parents=True, exist_ok=True)
     island_dir.mkdir(parents=True, exist_ok=True)
+    pack_dir.mkdir(parents=True, exist_ok=True)
 
     plan = _read_plan(plan_path) if plan_path else _default_plan(agents=agents, islands=islands)
     _validate_topology(plan)
@@ -59,8 +63,11 @@ def write_plan(
         path = island_dir / f"{_safe_id(island['id'])}.md"
         _write_if_allowed(path, _render_island(island), force=force)
     for agent in plan["agents"]:
-        path = agent_dir / f"{_safe_id(agent['id'])}.md"
+        safe_agent_id = _safe_id(agent["id"])
+        path = agent_dir / f"{safe_agent_id}.md"
         _write_if_allowed(path, _render_agent(agent), force=force)
+        packet_path = pack_dir / f"{safe_agent_id}.md"
+        _write_if_allowed(packet_path, _render_packet(agent), force=force)
 
 
 def _read_plan(path: Path) -> dict[str, list[dict[str, Any]]]:
@@ -131,7 +138,7 @@ def _default_plan(*, agents: int, islands: int) -> dict[str, list[dict[str, Any]
                     "title": f"Agent {index + 1}",
                     "brief": DEFAULT_DIRECTIONS[index % len(DEFAULT_DIRECTIONS)],
                     "starting_steps": [
-                        "Read CORAL.md, knowledge/eval_spec.md, and relevant sources.",
+                        f"Read knowledge/packs/{_safe_id(agent_id)}.md first; follow its capsule links before raw sources.",
                         "Run the quick eval before making broad changes.",
                         "Submit one clear attempt and record what changed.",
                     ],
@@ -172,6 +179,9 @@ def _normalize_agent(item: Any, index: int) -> dict[str, Any]:
         "focus": _string_list(item.get("focus")),
         "starting_steps": _string_list(item.get("starting_steps") or item.get("steps")),
         "avoid": _string_list(item.get("avoid") or item.get("risks")),
+        "must_read": _string_list(item.get("must_read") or item.get("knowledge")),
+        "optional_read": _string_list(item.get("optional_read")),
+        "eval_targets": _string_list(item.get("eval_targets")),
     }
 
 
@@ -197,10 +207,49 @@ def _render_agent(agent: dict[str, Any]) -> str:
     lines = [f"# {agent['title']}", ""]
     if agent.get("island_id") is not None:
         lines.extend([f"island_id: {agent['island_id']}", ""])
+    lines.extend(["Knowledge packet: `knowledge/packs/" + _safe_id(agent["id"]) + ".md`", ""])
     lines.extend(["## Initial Direction", agent["brief"] or "Define this agent's technical route.", ""])
     _append_list(lines, "Focus", agent.get("focus") or [])
     _append_list(lines, "Starting Steps", agent.get("starting_steps") or [])
     _append_list(lines, "Avoid", agent.get("avoid") or [])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_packet(agent: dict[str, Any]) -> str:
+    lines = [
+        f"# Knowledge Packet: {agent['title']}",
+        "",
+        f"agent_id: {agent['id']}",
+    ]
+    if agent.get("island_id") is not None:
+        lines.extend([f"island_id: {agent['island_id']}"])
+    lines.extend(
+        [
+            "",
+            "## Route",
+            agent["brief"] or "Follow the agent seed brief for the current route.",
+            "",
+            "## Read First",
+            "- `eval_spec.md`",
+            "- `maps/methods.md`",
+            "- `notes/index.md`",
+            "",
+        ]
+    )
+    _append_list(lines, "Must Read Capsules", agent.get("must_read") or [])
+    _append_list(lines, "Optional If Needed", agent.get("optional_read") or [])
+    _append_list(lines, "Eval Targets", agent.get("eval_targets") or [])
+    _append_list(lines, "Avoid", agent.get("avoid") or [])
+    lines.extend(
+        [
+            "## Source Rule",
+            "- Prefer the capsules named here over raw papers, repos, or web pages.",
+            "- Read files under `sources/` only when a capsule or eval decision requires it.",
+            "- Put newly found external material in `inbox/` until Codex/user review promotes it.",
+            "- Keep notes short and cite paths instead of copying large context.",
+            "",
+        ]
+    )
     return "\n".join(lines).rstrip() + "\n"
 
 

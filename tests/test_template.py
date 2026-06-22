@@ -50,7 +50,7 @@ def test_generate_coral_md_has_required_sections():
 
     # Shared state
     assert "coral log --search" in md
-    assert ".claude/notes" in md
+    assert ".claude/knowledge/notes" in md
     assert ".claude/skills/" in md
 
 
@@ -201,3 +201,14 @@ def test_generate_coral_md_includes_codex_prepared_starting_route():
     assert "Sparse Island" in md
     assert "sparse baseline" in md
     assert ".codex/knowledge/briefs/agent-seeds/0-agent-1.md" in md
+
+
+def test_generate_coral_md_uses_lightweight_knowledge_packet_orientation():
+    cfg = CoralConfig.from_dict({"task": {"name": "t", "description": "d"}})
+
+    md = generate_coral_md(cfg, agent_id="agent-1", shared_dir=".codex")
+
+    assert ".codex/knowledge/packs/agent-1.md" in md
+    assert ".codex/knowledge/packs/global.md" in md
+    assert "Follow the packet's capsule links before raw sources" in md
+    assert "Do not scan raw papers/repos/web captures by default" in md

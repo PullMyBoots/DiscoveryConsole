@@ -60,6 +60,9 @@ def test_init_creates_research_workbench_knowledge_skeleton(tmp_path):
 
     knowledge_dir = task_dir / "knowledge"
     expected_dirs = [
+        "capsules",
+        "maps",
+        "packs",
         "sources/papers",
         "sources/repos",
         "sources/web",
@@ -77,6 +80,9 @@ def test_init_creates_research_workbench_knowledge_skeleton(tmp_path):
     ]
     for rel in expected_dirs:
         assert (knowledge_dir / rel).is_dir(), rel
+    assert "Read Order" in (knowledge_dir / "index.md").read_text()
+    assert "Active Routes" in (knowledge_dir / "maps" / "methods.md").read_text()
+    assert "Global Knowledge Packet" in (knowledge_dir / "packs" / "global.md").read_text()
     assert (knowledge_dir / "manifest.jsonl").read_text() == ""
     eval_spec = (knowledge_dir / "eval_spec.md").read_text()
     assert "Breakthrough Metrics" in eval_spec

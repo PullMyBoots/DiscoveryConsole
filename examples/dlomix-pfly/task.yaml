@@ -133,7 +133,8 @@ agents:
   # Force a research-only phase before any coding. The manager spawns each
   # agent with the warmstart prompt ("RESEARCH-ONLY ... do NOT run coral eval
   # or write code"), blocks until they exit, then starts the main coding loop
-  # with notes already on disk in .claude/notes/research and .claude/notes/raw.
+  # with notes already on disk in .claude/knowledge/notes/research and
+  # source captures in .claude/knowledge/inbox.
   warmstart:
     enabled: true
 

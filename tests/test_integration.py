@@ -157,7 +157,7 @@ def test_coral_md_generation():
     # Must reference shared workspace commands
     assert "coral log --search" in md
     assert "coral log" in md
-    assert ".claude/notes/" in md
+    assert ".claude/knowledge/notes/" in md
     assert ".claude/skills/" in md
 
 

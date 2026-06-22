@@ -2,10 +2,10 @@
 """generate_index.py — Auto-generate index.md for a notes directory.
 
 Usage: python generate_index.py [NOTES_DIR] [--dry-run]
-Defaults to .coral/public/notes if no argument given.
+Defaults to .coral/public/knowledge/notes if no argument given.
 
 Produces a navigable table of contents grouped by category (Research,
-Experiments, Other). Skips raw/ (immutable sources) and meta files.
+Experiments, Other). Skips system/cache folders and meta files.
 Uses atomic writes for safe concurrent access.
 """
 
@@ -14,7 +14,7 @@ import os
 import tempfile
 from pathlib import Path
 
-# Categories in display order. raw/ is excluded from the index.
+# Categories in display order.
 CATEGORY_ORDER = ["research", "experiments"]
 CATEGORY_LABELS = {
     "research": "Research",
@@ -50,7 +50,7 @@ def _extract_title(path: Path, body: str) -> str:
 
 
 def _collect_notes(notes_dir: Path) -> list[dict[str, str]]:
-    """Collect all notes with metadata, excluding meta files and raw/."""
+    """Collect all notes with metadata, excluding meta files and system folders."""
     notes = []
     for path in sorted(notes_dir.rglob("*.md")):
         # Skip meta files, index itself, and notes.md
@@ -173,8 +173,8 @@ def main() -> None:
     parser.add_argument(
         "notes_dir",
         nargs="?",
-        default=".coral/public/notes",
-        help="Path to notes directory (default: .coral/public/notes)",
+        default=".coral/public/knowledge/notes",
+        help="Path to notes directory (default: .coral/public/knowledge/notes)",
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Print index to stdout without writing"

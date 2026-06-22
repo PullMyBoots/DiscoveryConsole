@@ -76,6 +76,12 @@ knowledge/
 ├── index.md
 ├── eval_spec.md
 ├── manifest.jsonl
+├── capsules/
+├── maps/
+│   └── methods.md
+├── packs/
+│   ├── global.md
+│   └── <agent-id>.md
 ├── sources/
 │   ├── papers/
 │   ├── repos/
@@ -101,6 +107,15 @@ such as commit, DOI, checksum, or doc version. Codex may append new proposed
 sources during review. CORAL may rewrite a manifest entry only to update review
 metadata such as `status`, `reviewed_by`, and `reviewed_at`.
 
+Keep the knowledge system lightweight. Raw papers, repos, web captures, docs,
+and datasets live under `sources/`, but agents should not read them by default.
+Codex should compress useful sources into short `capsules/*.md` files and route
+agents through `packs/<agent-id>.md`. A packet is the smallest reading set for
+one agent: route, must-read capsules, optional capsules, eval targets, and
+source rules. If no agent-specific packet exists, agents fall back to
+`packs/global.md`. `maps/methods.md` is the compact route map; keep it short and
+link to capsules instead of copying source material.
+
 `eval_spec.md` is the scoring trust argument Codex prepares before launch. It
 should cover breakthrough metrics, guardrail metrics, anti-cheating and
 overfitting checks, the scalar score formula, and the purpose of each eval
@@ -114,6 +129,9 @@ Use these review statuses:
 - `archived`: kept for provenance, but not active guidance.
 
 Use `inbox/` for newly downloaded material that has not been reviewed. Move reviewed artifacts into `sources/` and link them from a research note.
+When an inbox source becomes useful guidance, create or update a capsule and
+link it from a packet or `maps/methods.md`; do not make raw inbox material an
+ordinary agent starting point.
 
 The dashboard Knowledge view reads `manifest.jsonl` and scans `sources/` so
 papers, repos, web pages, docs, and datasets are visible even before an agent
@@ -166,8 +184,10 @@ Brief files should begin with a `#` heading and then a concise technical
 direction. Do not make the user edit these in the control panel; regenerate the
 workspace plan with Codex if the plan is poor.
 
-Use `scripts/prepare_agent_plan.py` to materialize these files. Codex can first
-write a JSON plan with `islands` and `agents`, then run:
+Use `scripts/prepare_agent_plan.py` to materialize these files. The script also
+writes `knowledge/packs/<agent-id>.md` so each agent starts from a small reading
+packet instead of scanning the whole knowledge tree. Codex can first write a
+JSON plan with `islands` and `agents`, then run:
 
 ```bash
 python scripts/prepare_agent_plan.py knowledge --plan plan.json --force

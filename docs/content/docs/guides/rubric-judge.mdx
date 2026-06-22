@@ -11,8 +11,8 @@ Both graders live inside `examples/`. You wire them into your own task by pointi
 
 | Grader | Rubric | Source | Best for |
 |--------|--------|--------|----------|
-| [`race_japan_grader`](https://github.com/Human-Agent-Society/CORAL/tree/main/examples/race-japan-elderly/grader) | **Static** — criteria are fixed per task | `grader.args.rubrics` in `task.yaml` | Benchmarks where the evaluation protocol must be stable across runs and agents |
-| [`apex_judge`](https://github.com/Human-Agent-Society/CORAL/tree/main/examples/apex-eggshell-skull/grader) | **Dynamic** — judge auto-generates the rubric on first eval, evolves it on plateau | Agent's own reading of the task, plus optional seed hints | Exploratory tasks where you want the bar to rise as the agent improves |
+| [`race_japan_grader`](https://github.com/PullMyBoots/DiscoveryConsole/tree/main/examples/race-japan-elderly/grader) | **Static** — criteria are fixed per task | `grader.args.rubrics` in `task.yaml` | Benchmarks where the evaluation protocol must be stable across runs and agents |
+| [`apex_judge`](https://github.com/PullMyBoots/DiscoveryConsole/tree/main/examples/apex-eggshell-skull/grader) | **Dynamic** — judge auto-generates the rubric on first eval, evolves it on plateau | Agent's own reading of the task, plus optional seed hints | Exploratory tasks where you want the bar to rise as the agent improves |
 
 Both produce the same kind of output: a `ScoreBundle` with one `Score` per criterion (`1.0` = PASS, `0.0` = FAIL) and a weighted-pass-rate aggregate.
 
@@ -30,7 +30,7 @@ The judge venv is created by `grader.setup` at `coral start` time and lives unde
 
 ## Static rubric: `race_japan_grader`
 
-Designed for the DeepResearch-Bench-style RACE task (see [examples/race-japan-elderly](https://github.com/Human-Agent-Society/CORAL/tree/main/examples/race-japan-elderly)). The rubric is exactly what you declare — the judge neither adds nor removes criteria.
+Designed for the DeepResearch-Bench-style RACE task (see [examples/race-japan-elderly](https://github.com/PullMyBoots/DiscoveryConsole/tree/main/examples/race-japan-elderly)). The rubric is exactly what you declare — the judge neither adds nor removes criteria.
 
 ```yaml
 # examples/race-japan-elderly/task.yaml
@@ -91,7 +91,7 @@ The judge fact-checks the worker's claims against reference documents bundled in
 
 ## Dynamic rubric: `apex_judge`
 
-Designed for the APEX-Agents legal / analyst benchmarks (see [examples/apex-eggshell-skull](https://github.com/Human-Agent-Society/CORAL/tree/main/examples/apex-eggshell-skull) and [examples/apex-frontier-bu](https://github.com/Human-Agent-Society/CORAL/tree/main/examples/apex-frontier-bu)). On the first eval the judge reads the agent's output and the source materials, then **generates its own initial rubric**. On subsequent evals it may **evolve** the rubric — adding harder criteria, dropping criteria that are consistently easy — when the worker's score plateaus or hits 100%.
+Designed for the APEX-Agents legal / analyst benchmarks (see [examples/apex-eggshell-skull](https://github.com/PullMyBoots/DiscoveryConsole/tree/main/examples/apex-eggshell-skull) and [examples/apex-frontier-bu](https://github.com/PullMyBoots/DiscoveryConsole/tree/main/examples/apex-frontier-bu)). On the first eval the judge reads the agent's output and the source materials, then **generates its own initial rubric**. On subsequent evals it may **evolve** the rubric — adding harder criteria, dropping criteria that are consistently easy — when the worker's score plateaus or hits 100%.
 
 ```yaml
 # examples/apex-eggshell-skull/task.yaml

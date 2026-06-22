@@ -6,16 +6,11 @@ A concrete before/after walkthrough. Use this as a model for your own reorganiza
 
 ## The Mess (before)
 
-After three deep-research sessions and one consolidation run, `notes/` looks like this:
+After three deep-research sessions and one consolidation run, `knowledge/notes/` looks like this:
 
 ```
-notes/
+knowledge/notes/
 ├── index.md                      ← outdated, missing 4 files
-├── raw/
-│   ├── attention-is-all-you-need.md
-│   ├── flash-attention-paper.md
-│   ├── lora-paper.md
-│   └── ... (12 more)
 ├── research/
 │   ├── Attention Mechanisms.md           ← spaces + uppercase
 │   ├── attention_in_transformers.md      ← snake_case
@@ -187,9 +182,8 @@ EOF
 ## After
 
 ```
-notes/
+knowledge/notes/
 ├── index.md                              ← regenerated, all 19 files listed
-├── raw/                                  ← untouched
 ├── research/
 │   ├── attention/
 │   │   ├── attention-mechanisms.md       (merged)

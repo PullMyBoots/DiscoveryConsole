@@ -86,7 +86,7 @@ Save the verdict and reasoning to `output_path`. Do not modify either note — t
     ],
     "preserve_from_b": [
       "The 'Failure Modes' section listing rank-too-low and target-module-mismatch",
-      "The link to raw/blog/lora-debugging-tips.md"
+      "The link to knowledge/inbox/blog/lora-debugging-tips.md"
     ],
     "preferred_host": "synthesize-new",
     "merge_title": "LoRA"
