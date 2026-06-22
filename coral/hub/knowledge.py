@@ -118,6 +118,23 @@ def add_reference_source(
         entry["origin_url"] = url
     if note:
         entry["note"] = note
+    inbox_dir = knowledge_dir / "inbox"
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    stub_path = inbox_dir / f"{_slugify(title)}.md"
+    entry["relative_path"] = stub_path.relative_to(knowledge_dir).as_posix()
+    stub_path.write_text(
+        "---\n"
+        f"title: {title}\n"
+        f"category: {entry['category']}\n"
+        f"status: {entry['status']}\n"
+        f"added_by: {added_by}\n"
+        f"added_at: {entry['added_at']}\n"
+        "---\n\n"
+        f"# {title}\n\n"
+        + (f"Source: {url}\n\n" if url else "")
+        + (f"{note}\n" if note else ""),
+        encoding="utf-8",
+    )
     with manifest.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     return {"ok": True, "entry": entry, "path": str(manifest)}
@@ -149,12 +166,20 @@ def write_eval_spec(
     writer: str = "user",
 ) -> dict[str, Any]:
     """Write the run-global eval design spec into the unified knowledge base."""
+    coral_dir = Path(coral_dir)
     knowledge_dir = Path(coral_dir) / "public" / "knowledge"
     from coral.workspace.project import _ensure_knowledge_base, _link_legacy_notes_dir
 
     _ensure_knowledge_base(knowledge_dir)
     _link_legacy_notes_dir(knowledge_dir.parent)
     path = knowledge_dir / "eval_spec.md"
+    if _has_attempts(coral_dir):
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        if content != existing:
+            raise ValueError(
+                "eval_spec.md is frozen after attempts exist; fork a new timestamp or "
+                "bump grader.eval_version and re-run candidates under the revised eval"
+            )
     updated_at = datetime.now(UTC).isoformat()
     text = content
     path.write_text(text, encoding="utf-8")
@@ -209,6 +234,13 @@ def update_reference_source_status(
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     tmp.replace(manifest)
     return {"ok": True, "entry": updated, "path": str(manifest)}
+
+
+def _has_attempts(coral_dir: Path) -> bool:
+    """Return True once a timestamp has produced or recorded attempts."""
+    attempt_roots = [coral_dir / "public" / "attempts"]
+    attempt_roots.extend(coral_dir.glob("islands/*/attempts"))
+    return any(root.is_dir() and any(root.glob("*.json")) for root in attempt_roots)
 
 
 def _knowledge_view_roots(coral_dir: Path) -> list[Path]:

@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 
 from coral.cli._helpers import find_coral_dir
+from coral.config import CoralConfig
+from coral.workspace.project import create_project, slugify
 
 
 def _ensure_ui_built() -> None:
@@ -87,9 +89,25 @@ def _ensure_ui_built() -> None:
 
 def _ensure_ui_deps() -> None:
     """Auto-install UI dependencies if missing."""
+    missing: list[str] = []
     try:
         import uvicorn  # noqa: F401
     except ImportError:
+        missing.append("uvicorn")
+    try:
+        import starlette  # noqa: F401
+    except ImportError:
+        missing.append("starlette")
+    if missing:
+        repo_root = Path(__file__).parent.parent.parent
+        if not (repo_root / "pyproject.toml").exists():
+            print(
+                "Error: Web UI dependencies are missing: "
+                f"{', '.join(missing)}.\n"
+                "Reinstall DiscoveryConsole from the current repository or install the UI extra.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         print("[coral] UI dependencies not installed. Running: uv sync --extra ui ...")
         result = subprocess.run(
             ["uv", "sync", "--extra", "ui"],
@@ -138,6 +156,63 @@ def start_ui_background(coral_dir: Path, port: int = 8420, host: str = "127.0.0.
     webbrowser.open(url)
 
 
+def _task_dir_from_ui_args(task: str | None, run: str | None) -> Path | None:
+    """Return a task directory suitable for pre-run dashboard creation."""
+    if run:
+        return None
+    candidates: list[Path] = []
+    if task:
+        raw = Path(task).expanduser()
+        candidates.extend([raw, Path.cwd() / raw])
+    else:
+        candidates.append(Path.cwd())
+
+    for candidate in candidates:
+        candidate = candidate.resolve()
+        if candidate.is_file() and candidate.name == "task.yaml":
+            return candidate.parent
+        if candidate.is_dir() and (candidate / "task.yaml").is_file():
+            return candidate
+    return None
+
+
+def _resolve_task_relative(path_text: str, task_dir: Path) -> Path:
+    path = Path(path_text).expanduser()
+    if not path.is_absolute():
+        path = task_dir / path
+    return path.resolve()
+
+
+def _latest_coral_for_task(task_dir: Path, config: CoralConfig) -> Path | None:
+    results_dir = _resolve_task_relative(config.workspace.results_dir, task_dir)
+    latest = results_dir / slugify(config.task.name) / "latest"
+    if not latest.exists():
+        return None
+    resolved = latest.resolve() if latest.is_symlink() else latest
+    coral_dir = resolved / ".coral" if (resolved / ".coral").is_dir() else resolved
+    return coral_dir if coral_dir.is_dir() else None
+
+
+def _prepare_prelaunch_run_if_task_dir(task: str | None, run: str | None) -> Path | None:
+    """Create or reuse a timestamp workspace so `coral ui` can open before start."""
+    task_dir = _task_dir_from_ui_args(task, run)
+    if task_dir is None:
+        return None
+
+    config_path = task_dir / "task.yaml"
+    config = CoralConfig.from_yaml(config_path)
+    config.task_dir = task_dir
+
+    existing = _latest_coral_for_task(task_dir, config)
+    if existing is not None:
+        return existing
+
+    print("[coral] No timestamp run found; preparing a pre-launch dashboard workspace...")
+    paths = create_project(config, config_dir=task_dir)
+    print(f"[coral] Prepared run workspace: {paths.run_dir}")
+    return paths.coral_dir
+
+
 def cmd_ui(args: argparse.Namespace) -> None:
     """Launch the web dashboard.
 
@@ -150,7 +225,12 @@ def cmd_ui(args: argparse.Namespace) -> None:
 
     _ensure_ui_built()
 
-    coral_dir = find_coral_dir(getattr(args, "task", None), getattr(args, "run", None))
+    coral_dir = _prepare_prelaunch_run_if_task_dir(
+        getattr(args, "task", None),
+        getattr(args, "run", None),
+    )
+    if coral_dir is None:
+        coral_dir = find_coral_dir(getattr(args, "task", None), getattr(args, "run", None))
 
     from coral.web import create_app
 

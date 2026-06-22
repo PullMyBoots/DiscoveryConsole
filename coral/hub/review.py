@@ -256,7 +256,6 @@ def _is_baseline(attempt: Attempt) -> bool:
         or metadata.get("is_baseline") is True
         or metadata.get("reference") == "baseline"
         or metadata.get("kind") == "baseline"
-        or attempt.status == "baseline"
     )
 
 

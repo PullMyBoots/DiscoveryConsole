@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, type LogData, type LogTurn, type LogSession, type LogEntry, type RunStatus, type Attempt } from "../lib/api";
 import { useSSE } from "../hooks/useSSE";
 import StatusBadge from "../components/StatusBadge";
@@ -17,6 +17,7 @@ export default function Logs() {
   const abortRef = useRef<AbortController | null>(null);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fetchInFlight = useRef(false);
+  const pendingRefreshAgent = useRef<string | null>(null);
 
   // Track when user scrolls away from bottom
   useEffect(() => {
@@ -40,9 +41,11 @@ export default function Logs() {
     api.status().then(setStatus).catch(() => {});
   }, []);
 
-  // Fetch logs + attempts for selected agent (debounced, with abort)
-  const fetchAgentData = useCallback((agentId: string) => {
-    if (fetchInFlight.current) return; // skip if already fetching
+  function fetchAgentData(agentId: string) {
+    if (fetchInFlight.current) {
+      pendingRefreshAgent.current = agentId;
+      return;
+    }
     fetchInFlight.current = true;
     abortRef.current?.abort();
     const ac = new AbortController();
@@ -50,9 +53,14 @@ export default function Logs() {
     api.logs(agentId, ac.signal)
       .then(setLogData)
       .catch(() => {})
-      .finally(() => { fetchInFlight.current = false; });
+      .finally(() => {
+        fetchInFlight.current = false;
+        const pendingAgent = pendingRefreshAgent.current;
+        pendingRefreshAgent.current = null;
+        if (pendingAgent) fetchAgentData(pendingAgent);
+      });
     api.agentAttempts(agentId).then(setAgentAttempts).catch(() => setAgentAttempts([]));
-  }, []);
+  }
 
   // Reset and load when agent changes
   useEffect(() => {
@@ -61,7 +69,7 @@ export default function Logs() {
     const ac = new AbortController();
     abortRef.current = ac;
     fetchInFlight.current = false;
-    setLogData(null); // eslint-disable-line react-hooks/set-state-in-effect -- reset before fetch
+    setLogData(null); // eslint-disable-line react-hooks/set-state-in-effect -- reset stale log content before fetch
     setLoading(true);
     api.logs(selectedAgent, ac.signal).then((data) => {
       setLogData(data);

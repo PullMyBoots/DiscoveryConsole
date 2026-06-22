@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +14,10 @@ from coral.hub.readiness import build_control_readiness
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_DIR = ROOT / "codex-skill" / "coral-research-workbench"
+DISCOVERY_REPO = "https://github.com/PullMyBoots/DiscoveryConsole"
+DISCOVERY_RAW_INSTALL = (
+    "https://raw.githubusercontent.com/PullMyBoots/DiscoveryConsole/main/install.sh"
+)
 
 
 def test_check_coral_install_reports_missing_when_cli_absent(tmp_path):
@@ -30,7 +35,33 @@ def test_check_coral_install_reports_missing_when_cli_absent(tmp_path):
     assert result.returncode == 1
     assert payload["ok"] is False
     assert payload["status"] == "missing"
-    assert "install.sh" in payload["install"]
+    assert payload["install"] == f"curl -fsSL {DISCOVERY_RAW_INSTALL} | sh"
+
+
+def test_install_sources_point_to_discoveryconsole() -> None:
+    files = [
+        ROOT / "README.md",
+        ROOT / "README_CN.md",
+        ROOT / "install.sh",
+        ROOT / "pyproject.toml",
+        ROOT / "docs" / "content" / "docs" / "getting-started" / "installation.mdx",
+        SKILL_DIR / "scripts" / "check_coral_install.py",
+    ]
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in files)
+
+    assert DISCOVERY_REPO in combined
+    assert DISCOVERY_RAW_INSTALL in combined
+    assert "git+https://github.com/Human-Agent-Society/CORAL.git" not in combined
+    assert "raw.githubusercontent.com/Human-Agent-Society/CORAL" not in combined
+
+
+def test_skill_reference_links_exist() -> None:
+    skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    refs = sorted(set(re.findall(r"`(references/[^`]+\.md)`", skill)))
+
+    assert refs
+    for ref in refs:
+        assert (SKILL_DIR / ref).is_file(), ref
 
 
 def test_check_coral_install_reports_ready_for_fake_cli(tmp_path):

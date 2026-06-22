@@ -11,14 +11,25 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Any
 
 import uvicorn
-from litellm.proxy.proxy_server import app as litellm_app
-from litellm.proxy.proxy_server import initialize
 
 from coral.gateway.middleware import CoralGatewayMiddleware
 
 logger = logging.getLogger(__name__)
+
+try:
+    from litellm.proxy.proxy_server import app as litellm_app
+    from litellm.proxy.proxy_server import initialize
+except ModuleNotFoundError as exc:  # pragma: no cover - exercised without gateway extra
+    if exc.name != "litellm":
+        raise
+    litellm_app: Any | None = None
+    initialize: Any | None = None
+    _LITELLM_IMPORT_ERROR: ModuleNotFoundError | None = exc
+else:
+    _LITELLM_IMPORT_ERROR = None
 
 HEALTH_CHECK_INTERVAL = 1.0  # seconds between polls
 HEALTH_CHECK_TIMEOUT = 60.0  # total wait before giving up
@@ -66,6 +77,14 @@ class GatewayManager:
 
     def start(self) -> None:
         """Initialize LiteLLM, add middleware, and start uvicorn in a thread."""
+        if _LITELLM_IMPORT_ERROR is not None or litellm_app is None or initialize is None:
+            raise RuntimeError(
+                "LiteLLM gateway dependencies are not installed. "
+                "Install CORAL with the gateway extra, for example "
+                "`uv tool install 'coral[gateway]'` or "
+                "`uv pip install 'coral[gateway]'`."
+            ) from _LITELLM_IMPORT_ERROR
+
         # Fail fast if port is already in use (e.g. stale gateway from previous run)
         self._check_port_available()
 

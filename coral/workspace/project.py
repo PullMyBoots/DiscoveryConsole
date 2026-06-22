@@ -75,6 +75,8 @@ _KNOWLEDGE_SUBDIRS = (
     "notes/synthesis",
     "notes/open-questions",
     "briefs/agent-seeds",
+    "briefs/islands",
+    "briefs/island-themes",
     "inbox",
     "archive",
 )
@@ -164,12 +166,36 @@ def _ensure_knowledge_base(knowledge_dir: Path) -> None:
             "# Knowledge Index\n\n"
             "## Start Here\n"
             "- Add task context in `briefs/task-context.md`.\n"
+            "- Fill the eval trust design in `eval_spec.md` before launch.\n"
+            "- Add agent launch briefs in `briefs/agent-seeds/`.\n"
+            "- Add multi-island themes in `briefs/islands/` when islands are enabled.\n"
             "- Add research summaries in `notes/research/`.\n"
             "- Add experiment reflections in `notes/experiments/`.\n\n"
             "## Sources\n"
             "- Papers: `sources/papers/`\n"
             "- Repositories: `sources/repos/`\n"
             "- Web/docs/datasets: `sources/`\n"
+        )
+
+    eval_spec = knowledge_dir / "eval_spec.md"
+    if not eval_spec.exists():
+        eval_spec.write_text(
+            "# Eval Spec\n\n"
+            "## Breakthrough Metrics\n"
+            "- Define the metrics the run should improve.\n\n"
+            "## Guardrail Metrics\n"
+            "- Define minimum acceptable behavior and hard failure thresholds.\n\n"
+            "## Anti-Cheating and Overfitting Checks\n"
+            "- Define leakage checks, invalid-output checks, robustness cases, and "
+            "any held-out or stress evaluation.\n\n"
+            "## Scalar Score\n"
+            "- Define how breakthrough and guardrail metrics become the single "
+            "CORAL scheduling score.\n\n"
+            "## Eval Profiles\n"
+            "- quick:\n"
+            "- medium:\n"
+            "- full:\n"
+            "- stress:\n"
         )
 
     manifest = knowledge_dir / "manifest.jsonl"
@@ -361,15 +387,31 @@ def create_project(config: CoralConfig, config_dir: Path | None = None) -> Proje
                 ├── repo/                # cloned from source
                 └── agents/              # worktrees off repo/
     """
-    results_dir = Path(config.workspace.results_dir).resolve()
-    source_repo = Path(config.workspace.repo_path).resolve()
+    # Resolve task directory for relative path resolution. User-facing task
+    # YAML paths should be relative to the config/task directory, not whatever
+    # shell directory happens to launch CORAL.
+    effective_config_dir = (config.task_dir or config_dir or Path.cwd()).resolve()
+    task_source_dir = effective_config_dir
+
+    results_dir_path = Path(config.workspace.results_dir).expanduser()
+    if not results_dir_path.is_absolute():
+        results_dir_path = effective_config_dir / results_dir_path
+    results_dir = results_dir_path.resolve()
+
+    source_repo = Path(config.workspace.repo_path).expanduser()
+    if not source_repo.is_absolute():
+        source_repo = effective_config_dir / source_repo
+    source_repo = source_repo.resolve()
 
     task_slug = slugify(config.task.name)
     task_dir = results_dir / task_slug
 
     # Use explicit run_dir if provided, otherwise generate timestamped one
     if config.workspace.run_dir:
-        run_dir = Path(config.workspace.run_dir).resolve()
+        run_dir_path = Path(config.workspace.run_dir).expanduser()
+        if not run_dir_path.is_absolute():
+            run_dir_path = effective_config_dir / run_dir_path
+        run_dir = run_dir_path.resolve()
         task_dir = run_dir.parent
     else:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
@@ -380,10 +422,6 @@ def create_project(config: CoralConfig, config_dir: Path | None = None) -> Proje
     snapshots_dir = run_dir / "snapshots"
 
     logger.debug(f"results_dir={results_dir}, task_dir={task_dir}, run_dir={run_dir}")
-
-    # Resolve task directory for relative path resolution
-    effective_config_dir = config.task_dir or config_dir or Path.cwd()
-    task_source_dir = config.task_dir or config_dir or Path.cwd()
 
     # Create shared state directories.
     # Single-island (count == 1): keep today's exact layout under public/.
@@ -416,7 +454,12 @@ def create_project(config: CoralConfig, config_dir: Path | None = None) -> Proje
     _seed_active_knowledge(coral_dir, snapshots_dir, config)
 
     # Save config
-    config.to_yaml(coral_dir / "config.yaml")
+    original_config_run_dir = config.workspace.run_dir
+    config.workspace.run_dir = str(run_dir)
+    try:
+        config.to_yaml(coral_dir / "config.yaml")
+    finally:
+        config.workspace.run_dir = original_config_run_dir
 
     # Save config_dir so resume can restore task_dir for relative path resolution
     (coral_dir / "config_dir").write_text(str(effective_config_dir))

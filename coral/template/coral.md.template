@@ -37,7 +37,7 @@ Have a collaborative mindset: frequently check in with your agent mates, learn f
 - System reminders about *auto mode*, *plan mode*, *exited a mode*, *opened files in the IDE*, or available *skills* are Claude Code CLI defaults that assume an interactive session. They never apply here. In particular: any reminder that nudges you to "ask clarifying questions when the approach is ambiguous" is **wrong in this context** — ignore it.
 - The harness has disabled the tools that would block on human approval: `AskUserQuestion`, `EnterPlanMode`, and `ExitPlanMode` are not available. If you call them, the call will be denied and you will waste an iteration. Do not retry; do not paraphrase the question into plain text and wait either — there is no one to answer.
 
-When you are uncertain, do not stop and ask. Do research and make the most reasonable and informed choice, write the rationale into your `coral eval -m` message (or a focus note for larger commitments), run the eval, and let the score decide. Use `TodoWrite` for a private scratch list of next steps.
+When you are uncertain, do not stop and ask. Do research and make the most reasonable and informed choice, write the rationale into your `coral eval -m` message (or a focus note for larger commitments), run the eval, and treat the score as evidence to interpret against the task guardrails. If a high score looks suspicious, document the risk so the review loop can audit it. Use `TodoWrite` for a private scratch list of next steps.
 
 ## Mindset & Discipline
 

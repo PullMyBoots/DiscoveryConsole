@@ -65,8 +65,10 @@ def build_control_readiness(coral_dir: str | Path) -> dict[str, Any]:
     if eval_version and profile:
         eval_status = "ready"
         if profiles and profile not in profiles:
-            eval_status = "warning"
-        eval_detail = f"{eval_version} / {profile}"
+            eval_status = "missing"
+            eval_detail = f"{eval_version} / {profile} is not defined in grader.profiles"
+        else:
+            eval_detail = f"{eval_version} / {profile}"
     else:
         eval_status = "missing"
         eval_detail = "grader.eval_version or grader.profile is missing"
@@ -106,7 +108,7 @@ def build_control_readiness(coral_dir: str | Path) -> dict[str, Any]:
         knowledge_status = "ready"
         knowledge_detail = f"{len(sources)} source(s) indexed"
     else:
-        knowledge_status = "warning"
+        knowledge_status = "missing"
         knowledge_detail = "knowledge index exists but has no sources"
     checks.append(
         {
@@ -145,7 +147,7 @@ def build_control_readiness(coral_dir: str | Path) -> dict[str, Any]:
     if brief_count >= planned:
         brief_status = "ready"
     elif brief_count:
-        brief_status = "warning"
+        brief_status = "missing"
     else:
         brief_status = "missing"
     checks.append(
@@ -181,7 +183,7 @@ def build_control_readiness(coral_dir: str | Path) -> dict[str, Any]:
         if len(unique_theme_ids) >= island_count:
             theme_status = "ready"
         elif unique_theme_ids:
-            theme_status = "warning"
+            theme_status = "missing"
         else:
             theme_status = "missing"
         checks.append(
@@ -304,7 +306,7 @@ def _eval_spec_status(knowledge_dirs: list[Path]) -> tuple[str, str, Path | None
         result = _eval_spec_status_for_dir(knowledge_dir)
         if result[0] == "ready":
             return result
-        if result[0] == "warning" and best_warning is None:
+        if result[0] == "missing" and best_warning is None:
             best_warning = result
     if best_warning is not None:
         return best_warning
@@ -351,7 +353,7 @@ def _eval_spec_status_for_dir(knowledge_dir: Path) -> tuple[str, str, Path | Non
             matched,
         )
     return (
-        "warning",
+        "missing",
         f"eval spec found but only covers {matched}/{len(sections)} required section(s)",
         spec_path,
         matched,

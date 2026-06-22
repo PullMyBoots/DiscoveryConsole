@@ -1,4 +1,4 @@
 interface:
-  display_name: "CORAL Research Workbench"
-  short_description: "Prepare a CORAL research workspace."
-  default_prompt: "Use this skill to turn a research idea into a runnable CORAL workspace with knowledge, baselines, eval profiles, agent briefs, and a control-panel-ready task configuration."
+  display_name: "DiscoveryConsole"
+  short_description: "Guide Codex-led human-in-the-loop research search."
+  default_prompt: "Use this skill to frame the research problem, design credible evals, prepare knowledge, baselines, and differentiated agent routes, then operate a DiscoveryConsole/CORAL workspace with the user in the review loop."

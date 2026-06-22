@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from coral.agent import registry
+from coral.agent.manager import AgentManager
 from coral.agent.registry import (
     default_model_for_runtime,
     get_runtime,
@@ -172,6 +173,70 @@ def test_config_accepts_entrypoint_runtime_with_explicit_model() -> None:
     )
     assert cfg.agents.runtime == "coral_test_fake_runtime_module:FakeRuntime"
     assert cfg.agents.model == "my-custom-model"
+
+
+def test_agent_manager_loads_runtime_from_task_dir(tmp_path: Path) -> None:
+    runtime_file = tmp_path / "local_runtime.py"
+    runtime_file.write_text(
+        """
+from pathlib import Path
+from typing import Any
+
+from coral.agent.runtime import AgentHandle
+
+
+class LocalRuntime:
+    def start(
+        self,
+        worktree_path: Path,
+        coral_md_path: Path,
+        model: str = "any",
+        runtime_options: dict[str, Any] | None = None,
+        max_turns: int = 200,
+        log_dir: Path | None = None,
+        verbose: bool = False,
+        resume_session_id: str | None = None,
+        prompt: str | None = None,
+        prompt_source: str | None = None,
+        task_name: str | None = None,
+        task_description: str | None = None,
+        gateway_url: str | None = None,
+        gateway_api_key: str | None = None,
+    ) -> AgentHandle:
+        raise NotImplementedError
+
+    def extract_session_id(self, log_path: Path) -> str | None:
+        return None
+
+    @property
+    def instruction_filename(self) -> str:
+        return "LOCAL.md"
+
+    @property
+    def shared_dir_name(self) -> str:
+        return ".local"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    cfg = CoralConfig.from_dict(
+        {
+            "task": {"name": "t", "description": "d"},
+            "agents": {
+                "runtime": "local_runtime:LocalRuntime",
+                "model": "local-model",
+            },
+        }
+    )
+    cfg.task_dir = tmp_path
+
+    original_sys_path = list(sys.path)
+    try:
+        manager = AgentManager(cfg)
+        assert manager.runtime.instruction_filename == "LOCAL.md"
+    finally:
+        sys.path[:] = original_sys_path
+        sys.modules.pop("local_runtime", None)
+        registry._RUNTIMES.pop("local_runtime:LocalRuntime", None)
 
 
 def test_config_keeps_builtin_default_for_known_runtime() -> None:

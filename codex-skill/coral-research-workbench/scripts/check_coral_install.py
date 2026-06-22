@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-INSTALL_COMMAND = "curl -fsSL https://raw.githubusercontent.com/Human-Agent-Society/CORAL/main/install.sh | sh"
+INSTALL_COMMAND = "curl -fsSL https://raw.githubusercontent.com/PullMyBoots/DiscoveryConsole/main/install.sh | sh"
 
 
 def check() -> dict[str, Any]:

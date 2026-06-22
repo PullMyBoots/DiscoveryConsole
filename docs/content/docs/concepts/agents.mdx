@@ -76,7 +76,7 @@ agents:
 You can override the model at launch time:
 
 ```bash
-coral start -c task.yaml --model opus
+coral start -c task.yaml agents.model=opus
 ```
 
 ## Multi-agent runs
@@ -93,4 +93,3 @@ Each agent gets:
 - Access to all other agents' attempts (scores and diffs)
 - Shared notes for communicating insights
 - Shared skills for reusable tools
-

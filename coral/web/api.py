@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -26,6 +27,8 @@ from coral.cli._helpers import (
     kill_tmux_session,
 )
 from coral.config import CoralConfig
+
+_AGENT_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 def _coral_dir(request: Request) -> Path:
@@ -79,6 +82,63 @@ def _write_agent_desired_state(coral_dir: Path, agent_id: str, desired_state: st
         "desired_state": desired_state,
     }
     return _write_agent_control_payload(coral_dir, agent_id, payload)
+
+
+def _known_agent_ids(coral_dir: Path) -> set[str]:
+    """Return agent ids that are planned or have observable runtime state."""
+    ids: set[str] = set()
+
+    try:
+        from coral.hub.plan import build_agent_plan
+
+        plan = build_agent_plan(coral_dir)
+        for island in plan.get("islands", []):
+            if not isinstance(island, dict):
+                continue
+            for agent in island.get("agents", []):
+                if isinstance(agent, dict) and agent.get("agent_id"):
+                    ids.add(str(agent["agent_id"]))
+    except Exception:
+        pass
+
+    try:
+        ids.update(read_agent_state(coral_dir).agents.keys())
+    except Exception:
+        pass
+
+    pid_map_file = coral_dir / "public" / "agent_pids.json"
+    if pid_map_file.exists():
+        try:
+            data = json.loads(pid_map_file.read_text())
+            if isinstance(data, dict):
+                ids.update(str(agent_id) for agent_id in data)
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    try:
+        from coral.web.logs import list_log_files
+
+        ids.update(list_log_files(coral_dir).keys())
+    except Exception:
+        pass
+
+    return ids
+
+
+def _validate_agent_control_target(coral_dir: Path, agent_id: str) -> JSONResponse | None:
+    if not _AGENT_ID_RE.fullmatch(agent_id):
+        return JSONResponse({"ok": False, "message": "invalid agent id"}, status_code=400)
+    known = _known_agent_ids(coral_dir)
+    if agent_id not in known:
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": f"agent {agent_id!r} is not part of this run",
+                "known_agents": sorted(known),
+            },
+            status_code=404,
+        )
+    return None
 
 
 async def get_config(request: Request) -> JSONResponse:
@@ -682,12 +742,41 @@ def _current_task_run(coral_dir: Path) -> tuple[str, str]:
 
 def _manager_pid(coral_dir: Path) -> int | None:
     pid_file = coral_dir / "public" / "manager.pid"
+    return _read_pid_file(pid_file)
+
+
+def _read_pid_file(pid_file: Path) -> int | None:
     if not pid_file.exists():
         return None
     try:
         return int(pid_file.read_text().strip())
     except (OSError, ValueError):
         return None
+
+
+def _terminate_pid_file(pid_file: Path, *, label: str, timeout_seconds: float = 4.0) -> list[str]:
+    """Terminate the process recorded in pid_file and remove the stale marker."""
+    stopped: list[str] = []
+    pid = _read_pid_file(pid_file)
+    if pid is None:
+        pid_file.unlink(missing_ok=True)
+        return stopped
+    try:
+        os.kill(pid, signal.SIGTERM)
+        stopped.append(f"{label}:{pid}")
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            if not _process_alive(pid):
+                break
+            time.sleep(0.2)
+        if _process_alive(pid):
+            os.kill(pid, signal.SIGKILL)
+            stopped.append(f"{label}:{pid}:killed")
+    except (ProcessLookupError, PermissionError):
+        pass
+    finally:
+        pid_file.unlink(missing_ok=True)
+    return stopped
 
 
 def _process_alive(pid: int | None) -> bool:
@@ -1444,6 +1533,14 @@ async def stop_control_run(request: Request) -> JSONResponse:
             pass
         (coral_dir / "public" / "manager.pid").unlink(missing_ok=True)
 
+    stopped.extend(
+        _terminate_pid_file(
+            coral_dir / "public" / "grader_daemon.pid",
+            label="grader",
+            timeout_seconds=4.0,
+        )
+    )
+
     kill_orphaned_agents(coral_dir / "public" / "agent.pids")
     kill_tmux_session(coral_dir)
 
@@ -1458,6 +1555,9 @@ async def stop_agent(request: Request) -> JSONResponse:
     """POST /api/agents/{id}/stop — request one agent to stop."""
     coral_dir = _coral_dir(request)
     agent_id = request.path_params["id"]
+    invalid = _validate_agent_control_target(coral_dir, agent_id)
+    if invalid is not None:
+        return invalid
     path = _write_agent_desired_state(coral_dir, agent_id, "stopped")
     return JSONResponse(
         {
@@ -1474,6 +1574,9 @@ async def resume_agent(request: Request) -> JSONResponse:
     """POST /api/agents/{id}/resume — request one manually stopped agent to resume."""
     coral_dir = _coral_dir(request)
     agent_id = request.path_params["id"]
+    invalid = _validate_agent_control_target(coral_dir, agent_id)
+    if invalid is not None:
+        return invalid
     path = _write_agent_desired_state(coral_dir, agent_id, "running")
     return JSONResponse(
         {
@@ -1490,6 +1593,9 @@ async def prompt_agent(request: Request) -> JSONResponse:
     """POST /api/agents/{id}/prompt — inject feedback into one agent."""
     coral_dir = _coral_dir(request)
     agent_id = request.path_params["id"]
+    invalid = _validate_agent_control_target(coral_dir, agent_id)
+    if invalid is not None:
+        return invalid
     try:
         body = await request.json()
     except Exception:
@@ -1630,15 +1736,33 @@ async def get_status(request: Request) -> JSONResponse:
 
     import time
 
-    for agent_id, logs in agent_logs.items():
-        latest = max(logs, key=lambda log: log["modified"])
-        island_id = latest.get("island_id") or agent_attempt_islands.get(agent_id)
+    all_agent_ids = sorted(
+        set(agent_logs)
+        | set(agent_runtime_states)
+        | set(agent_pid_map)
+        | set(agent_eval_status)
+        | set(agent_attempt_islands)
+    )
+
+    for agent_id in all_agent_ids:
+        logs = agent_logs.get(agent_id, [])
+        latest = max(logs, key=lambda log: log["modified"]) if logs else None
+        island_id = (latest or {}).get("island_id") or agent_attempt_islands.get(agent_id)
         island_id = str(island_id) if island_id is not None else None
         now = time.time()
-        age = now - latest["modified"]
-        earliest = min(logs, key=lambda log: log["modified"])
-        active_seconds = max(0.0, now - earliest["modified"])
         status_since = agent_pending_started_at.get(agent_id)
+        if latest is not None:
+            age = now - latest["modified"]
+            earliest = min(logs, key=lambda log: log["modified"])
+            active_seconds = max(0.0, now - earliest["modified"])
+        else:
+            age = None
+            runtime_state = agent_runtime_states.get(agent_id)
+            if runtime_state and runtime_state.state_started_at is not None:
+                active_seconds = max(0.0, now - runtime_state.state_started_at)
+                status_since = status_since or runtime_state.state_started_at
+            else:
+                active_seconds = None
 
         agent_pid = agent_pid_map.get(agent_id)
         if agent_pid:
@@ -1648,12 +1772,14 @@ async def get_status(request: Request) -> JSONResponse:
                 status = "active"
             except (ProcessLookupError, PermissionError):
                 status = "stopped"
-        elif any_agent_alive or is_docker:
+        elif (any_agent_alive or is_docker) and age is not None:
             # Container or agent.pids says something is running but no per-agent mapping
             status = "active" if age < 300 else "idle"
-        else:
-            # No PID info — log recency as last resort
+        elif age is not None and manager_alive:
+            # No per-agent PID info while the run is alive — log recency is a last resort.
             status = "active" if age < 120 else "stopped"
+        else:
+            status = "stopped"
         eval_status = agent_eval_status.get(agent_id)
         status = eval_status or status
         runtime_state = agent_runtime_states.get(agent_id)
@@ -1674,8 +1800,8 @@ async def get_status(request: Request) -> JSONResponse:
                 "island_id": island_id,
                 "status": status,
                 "sessions": len(logs),
-                "last_activity": latest["modified"],
-                "last_activity_age_seconds": max(0.0, age),
+                "last_activity": latest["modified"] if latest is not None else None,
+                "last_activity_age_seconds": max(0.0, age) if age is not None else None,
                 "active_seconds": active_seconds,
                 "status_duration_seconds": max(0.0, now - status_since)
                 if status_since is not None

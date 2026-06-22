@@ -137,10 +137,10 @@ def test_coral_install_command_git_vcs() -> None:
     from coral.workspace.grader_env import _coral_install_command
 
     origin = {
-        "url": "https://github.com/Human-Agent-Society/CORAL.git",
+        "url": "https://github.com/PullMyBoots/DiscoveryConsole.git",
         "vcs_info": {"vcs": "git", "commit_id": "55a9ad024abc", "requested_revision": "main"},
     }
-    expected = "uv pip install -q git+https://github.com/Human-Agent-Society/CORAL.git@55a9ad024abc"
+    expected = "uv pip install -q git+https://github.com/PullMyBoots/DiscoveryConsole.git@55a9ad024abc"
     assert _coral_install_command(origin) == expected
 
 
@@ -157,16 +157,27 @@ def test_coral_install_command_fork_url_is_preserved() -> None:
     assert "@deadbeef" in cmd
 
 
-def test_coral_install_command_rejects_archive_install() -> None:
-    """Archive (tarball) installs aren't supported — clear error."""
+def test_coral_install_command_archive_install() -> None:
+    """Archive/wheel installs are replicated into the grader venv."""
     from coral.workspace.grader_env import _coral_install_command
 
     origin = {
-        "url": "file:///tmp/coral.tar.gz",
+        "url": "file:///tmp/coral wheel.whl",
         "archive_info": {"hash": "sha256=abc"},
     }
-    with pytest.raises(RuntimeError, match="Unsupported coral install origin"):
-        _coral_install_command(origin)
+    assert _coral_install_command(origin) == "uv pip install -q '/tmp/coral wheel.whl'"
+
+
+def test_coral_install_command_unquotes_file_archive_path() -> None:
+    """PEP 610 file URLs percent-encode wheel filenames such as local versions."""
+    from coral.workspace.grader_env import _coral_install_command
+
+    origin = {
+        "url": "file:///tmp/coral-0.7.1.dev3%2Bgabc.d20260622-py3-none-any.whl",
+        "archive_info": {},
+    }
+    expected = "uv pip install -q /tmp/coral-0.7.1.dev3+gabc.d20260622-py3-none-any.whl"
+    assert _coral_install_command(origin) == expected
 
 
 def test_coral_install_command_rejects_non_git_vcs() -> None:

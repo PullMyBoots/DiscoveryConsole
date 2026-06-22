@@ -13,6 +13,13 @@ CORAL includes a built-in **LiteLLM gateway** that acts as a proxy between agent
 
 ## Setup
 
+The LiteLLM proxy is an optional dependency. If your CORAL install does not include it yet,
+install with the gateway extra before enabling this feature:
+
+```bash
+uv tool install "coral[gateway] @ git+https://github.com/PullMyBoots/DiscoveryConsole.git"
+```
+
 **1. Create a LiteLLM config file** (e.g. `litellm_config.yaml`) alongside your `task.yaml`:
 
 ```yaml

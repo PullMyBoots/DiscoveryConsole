@@ -10,6 +10,7 @@ import os
 import random
 import shutil
 import signal
+import sys
 import threading
 import time
 from collections import deque
@@ -98,6 +99,11 @@ class AgentManager:
     ) -> None:
         self.config = config
         self.config_dir = config_dir
+        runtime_import_dir = config_dir or config.task_dir
+        if runtime_import_dir is not None:
+            runtime_import_path = str(Path(runtime_import_dir).expanduser().resolve())
+            if runtime_import_path not in sys.path:
+                sys.path.insert(0, runtime_import_path)
         # Resolve concrete per-agent specs, then (when multi-island) partition them
         # across islands round-robin. Single-island (count=1) returns specs unchanged.
         base_specs = resolve_agent_specs(config)

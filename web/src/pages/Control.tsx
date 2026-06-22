@@ -186,28 +186,11 @@ function tuneEvaluatorConcurrency(config: TaskConfig) {
   }
 }
 
-function inferPerJobResourceHints(config: TaskConfig) {
-  const pool = config.grader.parallel?.resources;
-  if (!pool) return;
-  const gpuCount = Math.max(pool.gpu_count ?? 0, pool.gpu_ids?.length ?? 0);
-  config.grader.resources ??= {};
-  if (gpuCount > 0) {
-    config.grader.resources.gpu_count = Math.max(1, config.grader.resources.gpu_count ?? 0);
-    config.grader.resources.gpu_ids = [];
-  } else if (!config.grader.resources.gpu_ids?.length) {
-    config.grader.resources.gpu_count = 0;
-  }
-  if ((pool.cpu_cores ?? 0) > 0 && !(config.grader.resources.cpu_cores ?? 0)) {
-    config.grader.resources.cpu_cores = 1;
-  }
-}
-
 function updateEvaluatorResources(config: TaskConfig, updater: (resources: Record<string, unknown>) => void) {
   config.grader.parallel ??= {};
   config.grader.parallel.resources ??= {};
   updater(config.grader.parallel.resources as Record<string, unknown>);
   tuneEvaluatorConcurrency(config);
-  inferPerJobResourceHints(config);
 }
 
 function reasoningOptionsForRuntime(runtime?: string): ReasoningOption[] {

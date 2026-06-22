@@ -1,6 +1,6 @@
 ---
 title: Installation
-description: Install CORAL and its dependencies.
+description: Install DiscoveryConsole and its CORAL-derived execution engine.
 ---
 
 
@@ -9,19 +9,19 @@ description: Install CORAL and its dependencies.
 One line — installs the `coral` CLI globally so you can run it from any directory:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Human-Agent-Society/CORAL/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/PullMyBoots/DiscoveryConsole/main/install.sh | sh
 ```
 
 The script:
 
 1. Installs [`uv`](https://docs.astral.sh/uv/) if missing.
-2. Runs `uv tool install git+https://github.com/Human-Agent-Society/CORAL.git` — drops the `coral` binary into `~/.local/bin` inside an isolated venv.
+2. Runs `uv tool install git+https://github.com/PullMyBoots/DiscoveryConsole.git` — drops the `coral` binary into `~/.local/bin` inside an isolated venv.
 3. Ensures `~/.local/bin` is on `PATH` for future shells.
 
 Pin a version (any git tag, branch, or commit):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Human-Agent-Society/CORAL/main/install.sh | CORAL_VERSION=v0.7.0 sh
+curl -fsSL https://raw.githubusercontent.com/PullMyBoots/DiscoveryConsole/main/install.sh | CORAL_VERSION=main sh
 ```
 
 Verify:
@@ -67,20 +67,20 @@ If you'd rather not pipe a remote script into a shell:
 # Install uv first (skip if already installed):
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Install coral as a uv tool (isolated venv, on PATH):
-uv tool install git+https://github.com/Human-Agent-Society/CORAL.git
+# Install DiscoveryConsole as a uv tool (isolated venv, on PATH):
+uv tool install git+https://github.com/PullMyBoots/DiscoveryConsole.git
 
 # Pin a version:
-uv tool install git+https://github.com/Human-Agent-Society/CORAL.git@v0.7.0
+uv tool install git+https://github.com/PullMyBoots/DiscoveryConsole.git@main
 ```
 
-## Develop CORAL itself
+## Develop DiscoveryConsole itself
 
-If you're modifying CORAL's source rather than just using it, clone the repo and use an editable install. In this mode, prefix commands with `uv run`:
+If you're modifying DiscoveryConsole's source rather than just using it, clone the repo and use an editable install. In this mode, prefix commands with `uv run`:
 
 ```bash
-git clone https://github.com/Human-Agent-Society/CORAL.git
-cd CORAL
+git clone https://github.com/PullMyBoots/DiscoveryConsole.git
+cd DiscoveryConsole
 uv sync                       # basic
 uv sync --extra dev           # with pytest, ruff, mypy
 uv sync --extra ui            # with web dashboard

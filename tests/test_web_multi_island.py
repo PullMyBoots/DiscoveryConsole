@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import yaml
 from starlette.responses import JSONResponse
+from starlette.testclient import TestClient
 
 from coral.agent.state import AgentRuntimeState, AgentStateDocument, write_agent_state
 from coral.hub.attempts import write_attempt
@@ -37,6 +38,7 @@ from coral.web.api import (
     stop_agent,
     update_knowledge_source_status,
 )
+from coral.web.app import create_app
 from coral.web.events import FileWatcher
 from coral.web.logs import list_log_files
 
@@ -408,6 +410,26 @@ async def test_knowledge_eval_spec_roundtrip_updates_global_spec(tmp_path):
     assert read_back["updated_at"]
 
 
+async def test_knowledge_eval_spec_save_rejects_changes_after_attempts(tmp_path):
+    coral_dir = tmp_path / ".coral"
+    attempts_dir = coral_dir / "public" / "attempts"
+    attempts_dir.mkdir(parents=True)
+    (attempts_dir / "attempt.json").write_text("{}")
+    knowledge_dir = coral_dir / "public" / "knowledge"
+    knowledge_dir.mkdir(parents=True)
+    (knowledge_dir / "eval_spec.md").write_text("# Eval Spec\n\nOriginal.\n")
+
+    response = await save_knowledge_eval_spec(
+        _json_request(coral_dir, {"content": "# Eval Spec\n\nChanged.\n"})
+    )
+    payload = json.loads(response.body)
+
+    assert response.status_code == 400
+    assert payload["ok"] is False
+    assert "frozen after attempts exist" in payload["message"]
+    assert (knowledge_dir / "eval_spec.md").read_text() == "# Eval Spec\n\nOriginal.\n"
+
+
 async def test_update_knowledge_source_status_reviews_global_manifest_entry(tmp_path):
     coral_dir = tmp_path / ".coral"
     (coral_dir / "public").mkdir(parents=True)
@@ -428,7 +450,7 @@ async def test_update_knowledge_source_status_reviews_global_manifest_entry(tmp_
             coral_dir,
             {
                 "selector": {
-                    "relative_path": "inbox/candidate-repo",
+                    "relative_path": "inbox/candidate-repo.md",
                     "title": "Candidate repo",
                 },
                 "status": "accepted",
@@ -440,6 +462,7 @@ async def test_update_knowledge_source_status_reviews_global_manifest_entry(tmp_
     payload = json.loads(response.body)
     assert payload["entry"]["status"] == "accepted"
     assert payload["entry"]["reviewed_by"] == "user"
+    assert (coral_dir / "public" / "knowledge" / "inbox" / "candidate-repo.md").is_file()
 
     knowledge_response = await get_knowledge(_request(coral_dir))
     sources = json.loads(knowledge_response.body)["sources"]
@@ -554,6 +577,19 @@ async def test_get_review_summarizes_attempts_eval_and_knowledge(tmp_path):
             timestamp="2026-06-01T10:02:00Z",
         ),
     )
+    write_attempt(
+        coral_dir,
+        Attempt(
+            commit_hash="tie",
+            agent_id="agent-1",
+            title="tie with previous best",
+            score=0.7,
+            status="baseline",
+            parent_hash="best",
+            timestamp="2026-06-01T10:03:00Z",
+            metadata={"eval_version": "eval_v1", "eval_profile": "quick"},
+        ),
+    )
 
     response = await get_review(_request(coral_dir))
 
@@ -561,7 +597,8 @@ async def test_get_review_summarizes_attempts_eval_and_knowledge(tmp_path):
     payload = json.loads(response.body)
     assert payload["task"]["eval_version"] == "eval_v1"
     assert payload["task"]["eval_profile"] == "quick"
-    assert payload["attempts"]["total"] == 3
+    assert payload["attempts"]["total"] == 4
+    assert payload["attempts"]["baseline"] == 1
     assert payload["attempts"]["best"]["commit_hash"] == "best"
     assert payload["attempts"]["best_baseline"]["commit_hash"] == "base"
     assert payload["attempts"]["improvement_over_baseline"] == 0.29999999999999993
@@ -769,7 +806,7 @@ async def test_control_readiness_requires_eval_spec(tmp_path):
     assert checks["eval_spec"]["path"].endswith("knowledge/eval_spec.md")
 
 
-async def test_control_readiness_warns_on_incomplete_eval_spec(tmp_path):
+async def test_control_readiness_blocks_incomplete_eval_spec(tmp_path):
     coral_dir = tmp_path / "results" / "my-task" / "run-1" / ".coral"
     knowledge_dir = coral_dir / "public" / "knowledge"
     knowledge_dir.mkdir(parents=True)
@@ -792,7 +829,8 @@ async def test_control_readiness_warns_on_incomplete_eval_spec(tmp_path):
     payload = json.loads(response.body)
     checks = {check["id"]: check for check in payload["checks"]}
 
-    assert checks["eval_spec"]["status"] == "warning"
+    assert payload["status"] == "missing"
+    assert checks["eval_spec"]["status"] == "missing"
     assert checks["eval_spec"]["count"] == 1
 
 
@@ -1092,9 +1130,44 @@ async def test_control_instruction_roundtrip(tmp_path):
     assert payload["path"].endswith(".coral/public/control/next_instruction.md")
 
 
+def test_dashboard_write_allows_local_origin(tmp_path):
+    coral_dir = tmp_path / "results" / "my-task" / "run-1" / ".coral"
+    (coral_dir / "public").mkdir(parents=True)
+    app = create_app(coral_dir)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/control/instruction",
+            headers={"Origin": "http://127.0.0.1:8421"},
+            json={"instruction": "Review the best attempt before resuming."},
+        )
+
+    assert response.status_code == 200
+    assert (coral_dir / "public" / "control" / "next_instruction.md").read_text() == (
+        "Review the best attempt before resuming."
+    )
+
+
+def test_dashboard_write_rejects_non_local_origin(tmp_path):
+    coral_dir = tmp_path / "results" / "my-task" / "run-1" / ".coral"
+    (coral_dir / "public").mkdir(parents=True)
+    app = create_app(coral_dir)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/control/instruction",
+            headers={"Origin": "https://example.com"},
+            json={"instruction": "Stop the run."},
+        )
+
+    assert response.status_code == 403
+    assert not (coral_dir / "public" / "control" / "next_instruction.md").exists()
+
+
 async def test_agent_control_writes_desired_state(tmp_path):
     coral_dir = tmp_path / "results" / "my-task" / "run-1" / ".coral"
     (coral_dir / "public").mkdir(parents=True)
+    (coral_dir / "public" / "agent_pids.json").write_text(json.dumps({"agent-1": 12345}))
 
     response = await stop_agent(_request(coral_dir, id="agent-1"))
     payload = json.loads(response.body)
@@ -1116,6 +1189,7 @@ async def test_agent_control_writes_desired_state(tmp_path):
 async def test_agent_prompt_writes_one_shot_control_command(tmp_path):
     coral_dir = tmp_path / "results" / "my-task" / "run-1" / ".coral"
     (coral_dir / "public").mkdir(parents=True)
+    (coral_dir / "public" / "agent_pids.json").write_text(json.dumps({"agent-1": 12345}))
 
     response = await prompt_agent(
         _json_request(coral_dir, {"prompt": "Try a smaller batch size first."}, id="agent-1")
@@ -1131,6 +1205,20 @@ async def test_agent_prompt_writes_one_shot_control_command(tmp_path):
     assert saved["desired_state"] == "running"
     assert saved["prompt"] == "Try a smaller batch size first."
     assert saved["command_id"]
+
+
+async def test_agent_control_rejects_unknown_agent(tmp_path):
+    coral_dir = tmp_path / "results" / "my-task" / "run-1" / ".coral"
+    (coral_dir / "public").mkdir(parents=True)
+    (coral_dir / "public" / "agent_pids.json").write_text(json.dumps({"agent-1": 12345}))
+
+    response = await stop_agent(_request(coral_dir, id="agent-2"))
+    payload = json.loads(response.body)
+
+    assert response.status_code == 404
+    assert payload["ok"] is False
+    assert payload["known_agents"] == ["agent-1"]
+    assert not (coral_dir / "public" / "control" / "agents" / "agent-2.json").exists()
 
 
 async def test_status_uses_agent_runtime_state(tmp_path):
@@ -1160,6 +1248,55 @@ async def test_status_uses_agent_runtime_state(tmp_path):
     assert payload["agents"][0]["desired_state"] == "stopped"
     assert payload["agents"][0]["active_seconds"] >= 0
     assert payload["agents"][0]["last_activity_age_seconds"] >= 0
+
+
+async def test_status_does_not_mark_stopped_run_active_from_recent_log(tmp_path):
+    coral_dir = tmp_path / "results" / "my-task" / "run-1" / ".coral"
+    logs_dir = coral_dir / "public" / "logs"
+    logs_dir.mkdir(parents=True)
+    (logs_dir / "agent-1.0.log").write_text("recent final activity")
+    (coral_dir / "public" / "run_state.json").write_text(
+        json.dumps({"status": "stopped", "stopped_reason": "deadline"})
+    )
+
+    response = await get_status(_request(coral_dir))
+    payload = json.loads(response.body)
+
+    assert response.status_code == 200
+    assert payload["manager_alive"] is False
+    assert payload["run_state"]["status"] == "stopped"
+    assert payload["agents"][0]["agent_id"] == "agent-1"
+    assert payload["agents"][0]["status"] == "stopped"
+
+
+async def test_status_includes_agent_without_logs(tmp_path):
+    coral_dir = tmp_path / "results" / "my-task" / "run-1" / ".coral"
+    (coral_dir / "public").mkdir(parents=True)
+    started_at = time.time() - 20
+    (coral_dir / "public" / "agent_pids.json").write_text(json.dumps({"agent-1": 999999999}))
+    write_agent_state(
+        coral_dir,
+        AgentStateDocument(
+            agents={
+                "agent-1": AgentRuntimeState(
+                    state="paused",
+                    state_started_at=started_at,
+                )
+            },
+        ),
+    )
+
+    response = await get_status(_request(coral_dir))
+    payload = json.loads(response.body)
+
+    assert response.status_code == 200
+    assert payload["agents"][0]["agent_id"] == "agent-1"
+    assert payload["agents"][0]["status"] == "paused"
+    assert payload["agents"][0]["runtime_state"] == "paused"
+    assert payload["agents"][0]["sessions"] == 0
+    assert payload["agents"][0]["last_activity"] is None
+    assert payload["agents"][0]["last_activity_age_seconds"] is None
+    assert payload["agents"][0]["active_seconds"] >= 10
 
 
 async def test_status_exposes_heartbeat_runtime_state(tmp_path):

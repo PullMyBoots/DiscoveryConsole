@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -118,7 +119,7 @@ def _start_in_tmux(args: argparse.Namespace, config: CoralConfig) -> None:
     session_name = f"coral-{task_name}-{timestamp}"
 
     coral_cmd = _build_coral_command(args)
-    shell_cmd = " ".join(f"'{c}'" if " " in c else c for c in coral_cmd)
+    shell_cmd = shlex.join(coral_cmd)
 
     result = subprocess.run(
         ["tmux", "new-session", "-d", "-s", session_name, shell_cmd],
@@ -368,7 +369,7 @@ def _resume_in_tmux(args: argparse.Namespace, config: CoralConfig, coral_dir: Pa
     # Forward user overrides, then force local (inner process is already in tmux)
     cmd.extend(getattr(args, "overrides", []))
     cmd.append("run.session=local")
-    shell_cmd = " ".join(f"'{c}'" if " " in c else c for c in cmd)
+    shell_cmd = shlex.join(cmd)
 
     result = subprocess.run(
         ["tmux", "new-session", "-d", "-s", session_name, shell_cmd],

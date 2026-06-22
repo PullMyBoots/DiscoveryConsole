@@ -246,7 +246,7 @@ export interface AgentStatus {
   island_id?: string | null;
   status: "active" | "idle" | "stopped" | "paused" | "evaluating" | "waiting" | "heartbeat";
   sessions: number;
-  last_activity: number;
+  last_activity: number | null;
   last_activity_age_seconds?: number | null;
   active_seconds?: number | null;
   status_duration_seconds?: number | null;

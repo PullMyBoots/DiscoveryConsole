@@ -14,7 +14,8 @@ Design:
       * editable install (dev `uv sync` path) -> `uv pip install -e <path>`
       * git VCS install (the README's `install.sh` -> `uv tool install
         git+...` path) -> `uv pip install git+<url>@<commit_id>`
-    Both flavors point the grader venv at the exact same code the host is
+      * archive/wheel install -> `uv pip install <same archive URL/path>`
+    These flavors point the grader venv at the exact same code the host is
     running, so there's no version drift between host and grader.
   - User's `grader.setup` shell commands then run with VIRTUAL_ENV pointed
     at the grader venv, so plain `uv pip install ...` lands in the right
@@ -26,12 +27,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import sys
 import sysconfig
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from coral.config import GraderConfig
 from coral.workspace.repo import _clean_env, run_setup_commands
@@ -63,7 +65,7 @@ def _coral_install_origin() -> dict:
         raise RuntimeError(
             f"{direct_url} not found; CORAL was installed by an installer that "
             "does not write PEP 610 metadata. Reinstall with `uv tool install "
-            "git+https://github.com/Human-Agent-Society/CORAL.git` or "
+            "git+https://github.com/PullMyBoots/DiscoveryConsole.git` or "
             "`git clone ... && uv sync`."
         )
     return json.loads(direct_url.read_text())
@@ -77,8 +79,8 @@ def _coral_install_command(origin: dict) -> str:
 
     if origin.get("dir_info", {}).get("editable"):
         # `file:///abs/path` -> `/abs/path`
-        local_path = urlparse(url).path
-        return f"uv pip install -q -e {local_path}"
+        local_path = unquote(urlparse(url).path)
+        return f"uv pip install -q -e {shlex.quote(local_path)}"
 
     if "vcs_info" in origin:
         vcs = origin["vcs_info"].get("vcs")
@@ -89,9 +91,14 @@ def _coral_install_command(origin: dict) -> str:
             )
         return f"uv pip install -q git+{url}@{commit}"
 
+    if "archive_info" in origin:
+        parsed = urlparse(url)
+        install_target = unquote(parsed.path) if parsed.scheme == "file" else url
+        return f"uv pip install -q {shlex.quote(install_target)}"
+
     raise RuntimeError(
-        f"Unsupported coral install origin (not editable, not VCS): {origin!r}. "
-        "Reinstall via `uv tool install git+...` or `uv sync`."
+        f"Unsupported coral install origin (not editable, not VCS, not archive): {origin!r}. "
+        "Reinstall via `uv tool install git+...`, a wheel/archive install, or `uv sync`."
     )
 
 

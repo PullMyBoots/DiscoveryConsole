@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -666,10 +667,10 @@ def setup_worktree_env(worktree_path: Path, setup_commands: list[str]) -> None:
     venv_python = worktree_venv / "bin" / "python"
     if venv_python.exists() and shutil.which("uv"):
         coral_root = Path(__file__).resolve().parent.parent.parent
+        env = _clean_env()
+        env.update(env_override)
         if (coral_root / "pyproject.toml").exists():
             logger.info(f"Installing coral into worktree venv from {coral_root}")
-            env = _clean_env()
-            env.update(env_override)
             result = subprocess.run(
                 ["uv", "pip", "install", "--python", str(venv_python), "-e", str(coral_root)],
                 cwd=str(worktree_path),
@@ -679,3 +680,24 @@ def setup_worktree_env(worktree_path: Path, setup_commands: list[str]) -> None:
             )
             if result.returncode != 0:
                 logger.warning(f"Failed to install coral in worktree: {result.stderr.strip()}")
+        else:
+            try:
+                from coral.workspace.grader_env import _coral_install_command, _coral_install_origin
+
+                install_cmd = _coral_install_command(_coral_install_origin())
+                install_args = shlex.split(install_cmd)
+                if install_args[:3] != ["uv", "pip", "install"]:
+                    raise RuntimeError(f"unexpected install command: {install_cmd}")
+                install_args = [*install_args[:3], "--python", str(venv_python), *install_args[3:]]
+                logger.info("Installing coral into worktree venv from host install origin")
+                result = subprocess.run(
+                    install_args,
+                    cwd=str(worktree_path),
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                )
+                if result.returncode != 0:
+                    logger.warning(f"Failed to install coral in worktree: {result.stderr.strip()}")
+            except Exception as exc:
+                logger.warning(f"Could not determine coral install origin for worktree venv: {exc}")

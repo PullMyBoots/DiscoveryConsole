@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import FileResponse, Response
@@ -50,6 +52,25 @@ from coral.web.api import (
     update_knowledge_source_status,
 )
 from coral.web.events import FileWatcher, sse_endpoint
+
+_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+_LOCAL_ORIGIN_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def _is_local_origin(value: str | None) -> bool:
+    if not value:
+        return True
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https"} and parsed.hostname in _LOCAL_ORIGIN_HOSTS
+
+
+class RejectNonLocalWriteMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path.startswith("/api/") and request.method.upper() not in _SAFE_METHODS:
+            origin = request.headers.get("origin") or request.headers.get("referer")
+            if not _is_local_origin(origin):
+                return Response("Forbidden: dashboard writes require a local origin", status_code=403)
+        return await call_next(request)
 
 
 def create_app(coral_dir: Path, results_dir: Path | None = None) -> Starlette:
@@ -143,9 +164,11 @@ def create_app(coral_dir: Path, results_dir: Path | None = None) -> Starlette:
     routes.append(Route("/{path:path}", spa_fallback))
 
     middleware = [
+        Middleware(RejectNonLocalWriteMiddleware),
         Middleware(
             CORSMiddleware,
-            allow_origins=["*"],
+            allow_origins=[],
+            allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$",
             allow_methods=["*"],
             allow_headers=["*"],
         )

@@ -1,15 +1,15 @@
 #!/usr/bin/env sh
-# CORAL installer — installs the `coral` CLI globally via uv.
+# DiscoveryConsole installer — installs the `coral` CLI globally via uv.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/Human-Agent-Society/CORAL/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/PullMyBoots/DiscoveryConsole/main/install.sh | sh
 #
 # Pin a version (any git tag, branch, or commit):
-#   curl -fsSL https://raw.githubusercontent.com/Human-Agent-Society/CORAL/main/install.sh | CORAL_VERSION=v0.5.0 sh
+#   curl -fsSL https://raw.githubusercontent.com/PullMyBoots/DiscoveryConsole/main/install.sh | CORAL_VERSION=main sh
 #
 # What it does:
 #   1. Installs `uv` if missing (via https://astral.sh/uv/install.sh)
-#   2. Runs `uv tool install --force git+https://github.com/Human-Agent-Society/CORAL.git`
+#   2. Runs `uv tool install --force git+https://github.com/PullMyBoots/DiscoveryConsole.git`
 #      — places `coral` in ~/.local/bin (an isolated venv, on PATH)
 #   3. Ensures ~/.local/bin is on PATH in future shells
 #
@@ -17,7 +17,7 @@
 # gives you an editable install which `coral` automatically prefers.
 set -eu
 
-REPO="https://github.com/Human-Agent-Society/CORAL.git"
+REPO="${DISCOVERYCONSOLE_REPO:-https://github.com/PullMyBoots/DiscoveryConsole.git}"
 VERSION="${CORAL_VERSION:-main}"
 
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$1"; }
@@ -52,7 +52,7 @@ Next steps:
   coral init my-task                    Scaffold a new task
   coral start -c my-task/task.yaml      Launch agents
 
-Docs:  https://human-agent-society.github.io/CORAL/
+Project: https://github.com/PullMyBoots/DiscoveryConsole
 EOF
 else
   warn "Install succeeded, but 'coral' is not on PATH in this shell."

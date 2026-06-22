@@ -29,10 +29,10 @@ The `examples/` directory includes task configurations for several benchmarks:
 coral start -c examples/circle_packing/task.yaml
 
 # With more agents
-coral start -c examples/circle_packing/task.yaml --agents 4
+coral start -c examples/circle_packing/task.yaml agents.count=4
 
 # With web dashboard
-coral start -c examples/circle_packing/task.yaml --ui
+coral start -c examples/circle_packing/task.yaml run.ui=true
 ```
 
 ## Writing benchmark graders
@@ -88,4 +88,3 @@ uvx harbor run -d terminal-bench@2.0 \
   --agent-import-path "solve:SolverAgent" \
   -l 5
 ```
-
