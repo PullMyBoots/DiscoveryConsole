@@ -1,4 +1,4 @@
-"""Read/list/search notes from the shared notes directory.
+"""Read/list/search legacy shared notes.
 
 Notes are individual Markdown files with optional YAML frontmatter:
 
@@ -9,9 +9,9 @@ Notes are individual Markdown files with optional YAML frontmatter:
     # Title of the note
     Body text with findings, numbers, conclusions...
 
-New workspaces expose notes at ``.coral/public/knowledge/notes`` and keep
-``.coral/public/notes`` as a compatibility alias. Legacy format (single
-notes.md with ## headings) is also supported.
+New practice knowledge is stored through ``coral kb`` under
+``.coral/public/knowledge/practice``. This module keeps the older
+``.coral/public/notes`` interface readable for existing timestamps.
 """
 
 from __future__ import annotations
@@ -22,14 +22,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from coral.hub._island import island_root
 
-
-def _notes_dir(coral_dir: str | Path, island_id: str | int | None = None) -> Path:
-    """Return the path to the notes directory, ensuring it exists."""
-    p = island_root(coral_dir, island_id) / "notes"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+def _notes_dir(coral_dir: str | Path) -> Path:
+    """Return the legacy notes directory path without creating it."""
+    return Path(coral_dir) / "public" / "notes"
 
 
 def _is_user_note(p: Path) -> bool:
@@ -157,44 +153,23 @@ def _sort_key(entry: dict[str, Any]) -> datetime:
 
 def list_notes(
     coral_dir: str | Path,
-    island_id: str | int | None = None,
 ) -> list[dict[str, Any]]:
     """List all note entries from the notes directory.
 
     Reads individual .md files. Falls back to legacy notes.md format.
     Also checks the legacy 'insights/' directory for backward compatibility.
 
-    With ``island_id=None`` in multi-island mode, aggregates notes from
-    every island so ``coral notes`` shows the whole team's research.
     """
     coral_dir = Path(coral_dir)
-    if island_id is not None or not (coral_dir / "islands").exists():
-        return _list_notes_single(coral_dir, island_id)
-
-    entries: list[dict[str, Any]] = []
-    for view_root in _note_view_roots(coral_dir):
-        if view_root.name == "public":
-            sub = _collect_from_dir(view_root / "notes")
-        else:
-            sub = _list_notes_single(coral_dir, island_id=view_root.name, clean=False)
-            for entry in sub:
-                entry["island_id"] = view_root.name
-        for entry in sub:
-            entry.setdefault("_path", entry.get("_path"))
-        entries.extend(sub)
-    entries.sort(key=_sort_key)
-    _clean_note_entries(entries)
-    return entries
+    return _list_notes_single(coral_dir)
 
 
-def _list_notes_single(
-    coral_dir: Path, island_id: str | int | None, *, clean: bool = True
-) -> list[dict[str, Any]]:
-    notes_dir = _notes_dir(coral_dir, island_id)
+def _list_notes_single(coral_dir: Path, *, clean: bool = True) -> list[dict[str, Any]]:
+    notes_dir = _notes_dir(coral_dir)
     entries = _collect_from_dir(notes_dir)
 
     # Also read from insights/ directory if present
-    insights_dir = island_root(coral_dir, island_id) / "insights"
+    insights_dir = coral_dir / "public" / "insights"
     if insights_dir.is_dir():
         seen = {e["filename"] for e in entries}
         for e in _collect_from_dir(insights_dir):
@@ -233,26 +208,14 @@ def _clean_note_entries(entries: list[dict[str, Any]]) -> None:
             entry["category"] = "other"
 
 
-def _note_view_roots(coral_dir: Path) -> list[Path]:
-    """Per-island note roots in multi-island mode."""
-    from coral.hub._island import all_view_roots
-
-    roots = [r for r in all_view_roots(coral_dir) if r.name.isdigit()]
-    public = coral_dir / "public"
-    if (public / "notes").exists():
-        return [public, *roots]
-    return roots
-
-
 def search_notes(
     coral_dir: str | Path,
     query: str,
-    island_id: str | int | None = None,
 ) -> list[dict[str, Any]]:
     """Search notes by keyword (case-insensitive) in title and body."""
     query_lower = query.lower()
     results = []
-    for entry in list_notes(coral_dir, island_id=island_id):
+    for entry in list_notes(coral_dir):
         full_text = f"{entry['title']} {entry['body']}".lower()
         if query_lower in full_text:
             results.append(entry)
@@ -262,10 +225,9 @@ def search_notes(
 def get_recent_notes(
     coral_dir: str | Path,
     n: int = 5,
-    island_id: str | int | None = None,
 ) -> list[dict[str, Any]]:
     """Return the last N notes (most recent last in file = most recent last)."""
-    entries = list_notes(coral_dir, island_id=island_id)
+    entries = list_notes(coral_dir)
     return entries[-n:] if len(entries) > n else entries
 
 
@@ -284,10 +246,9 @@ def format_notes_list(entries: list[dict[str, Any]]) -> str:
 def read_note(
     coral_dir: str | Path,
     index: int,
-    island_id: str | int | None = None,
 ) -> str | None:
     """Read a specific note entry by index (1-based)."""
-    entries = list_notes(coral_dir, island_id=island_id)
+    entries = list_notes(coral_dir)
     if 1 <= index <= len(entries):
         e = entries[index - 1]
         return e["body"]
@@ -296,10 +257,9 @@ def read_note(
 
 def read_all_notes(
     coral_dir: str | Path,
-    island_id: str | int | None = None,
 ) -> str:
     """Read all notes concatenated."""
-    entries = list_notes(coral_dir, island_id=island_id)
+    entries = list_notes(coral_dir)
     if not entries:
         return ""
     parts = []
@@ -310,16 +270,15 @@ def read_all_notes(
 
 def notes_by(
     coral_dir: str | Path,
-    island_id: str | int | None,
     agent_id: str,
 ) -> list[Path]:
     """Return absolute paths of notes whose frontmatter `creator` matches agent_id.
 
     Notes without a `creator:` field (e.g. legacy notes, the bundled
     notes.md) are excluded — they cannot be safely attributed and should
-    stay on the source island when their author migrates.
+    be safely attributed.
     """
-    notes_dir = _notes_dir(coral_dir, island_id)
+    notes_dir = _notes_dir(coral_dir)
     matched: list[Path] = []
     for md_file in sorted(notes_dir.rglob("*.md")):
         if not _is_user_note(md_file):

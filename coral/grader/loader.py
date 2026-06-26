@@ -23,7 +23,7 @@ from coral.workspace.grader_env import grader_python_path
 logger = logging.getLogger(__name__)
 
 
-def load_grader(config: CoralConfig, coral_dir: str | Path) -> Any:
+def load_grader(config: CoralConfig, coral_dir: str | Path, *, eval_space: str | None = None) -> Any:
     """Resolve the grader for a task.
 
     Returns a grader implementing the GraderInterface protocol. Setting
@@ -33,7 +33,9 @@ def load_grader(config: CoralConfig, coral_dir: str | Path) -> Any:
     coral_dir = Path(coral_dir)
     private_dir = coral_dir / "private"
 
-    if not config.grader.entrypoint:
+    grader_config = config.grader.for_space(eval_space or config.evaluation.score_space())
+
+    if not grader_config.entrypoint:
         raise ValueError(
             "No grader configured. Set grader.entrypoint = "
             "'your_pkg.module:Grader' in task.yaml and grader.setup to "
@@ -50,11 +52,11 @@ def load_grader(config: CoralConfig, coral_dir: str | Path) -> Any:
             f"`coral.workspace.grader_env.setup_grader_env` can create it."
         )
     logger.info(
-        f"Loading grader entrypoint {config.grader.entrypoint!r} via worker {worker_python}"
+        f"Loading grader entrypoint {grader_config.entrypoint!r} via worker {worker_python}"
     )
     return SubprocessGrader(
-        entrypoint=config.grader.entrypoint,
+        entrypoint=grader_config.entrypoint,
         worker_python=worker_python,
-        config=config.grader,
+        config=grader_config,
         private_dir=str(private_dir),
     )

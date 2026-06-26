@@ -4,7 +4,7 @@ description: The .coral/ directory and knowledge sharing between agents.
 ---
 
 
-The `.coral/` directory is the central hub for all shared state in a CORAL run. It's created by `coral start` and symlinked into each agent's worktree.
+The `.coral/` directory is the central hub for all shared state in a CORAL run. It's created by `coral prepare`; each agent sees `.coral/public/` through its runtime-native shared directory such as `.claude/`, `.codex/`, or `.opencode/`. The worktree root also has a `CORAL_SHARED` symlink to that runtime directory.
 
 ## Directory structure
 
@@ -15,19 +15,20 @@ The `.coral/` directory is the central hub for all shared state in a CORAL run. 
 │   ├── attempts/            # Eval results (JSON files)
 │   │   ├── <commit-hash>.json
 │   │   └── ...
-│   ├── notes/               # Agent-written insights (Markdown)
-│   │   ├── 001_agent-1_initial-findings.md
-│   │   └── ...
+│   ├── knowledge/
+│   │   ├── manuals/         # Stable CORAL operating docs
+│   │   ├── external/        # Frozen papers, repos, docs, datasets, references
+│   │   ├── briefs/          # Codex-prepared runnable agent seed bundles
+│   │   └── practice/        # Eval-linked agent chains, notebooks, reflections
 │   ├── skills/              # Reusable tools (directories)
 │   │   ├── optimizer/
 │   │   │   ├── SKILL.md
 │   │   │   └── tool.py
 │   │   └── ...
 │   ├── logs/                # Agent session logs
-│   ├── heartbeat/           # Heartbeat action configs
 │   ├── eval_count           # Global eval counter (integer)
 │   ├── grader_daemon.pid    # PID of the grader daemon process
-│   └── grader_daemon_heartbeat  # Daemon liveness timestamp (ISO 8601)
+│   └── grader_daemon_liveness  # Daemon liveness timestamp (ISO 8601)
 │
 └── private/                 # Hidden from agents
     ├── grader_venv/         # Isolated venv running the grader entrypoint
@@ -62,30 +63,18 @@ Every time an agent runs `coral eval`, an attempt record is written to `.coral/p
 | `crashed` | Grader raised an exception |
 | `timeout` | Grader exceeded the timeout |
 
-## Notes
+## Knowledge
 
-Agents write Markdown notes with YAML frontmatter to share findings:
-
-```markdown
----
-creator: agent-1
-created: 2026-03-15T10:30:00+00:00
----
-
-# Vectorization approach works better
-
-Found that replacing the inner loop with numpy vectorization
-improved runtime by 2x. Key change: use np.einsum instead
-of nested for-loops.
-```
-
-Browse notes with the CLI:
+Agents do not browse shared knowledge by listing every file. They query indexes first, then read the specific item they need:
 
 ```bash
-coral notes                    # List all notes
-coral notes --search "numpy"   # Search by keyword
-coral notes --read 3           # Read note #3
+coral kb index manual
+coral kb index external
+coral kb index practice --by score
+coral kb read <id>
 ```
+
+External knowledge is treated as frozen input. Practice knowledge is mutable run output: eval-linked method summaries, score curves, notebooks, and reflections that point back to the exact commit via `coral show <hash> --diff`.
 
 ## Skills
 
@@ -113,7 +102,7 @@ The workspace guard hook enforces boundaries:
 |------|---------------|
 | Own worktree | Read + Write |
 | Sibling worktrees | Read only |
-| `.coral/public/` | Read + Write |
+| Runtime shared dir / `CORAL_SHARED` | Read + Write only through public shared state and CLI contracts |
 | `.coral/private/` | No access |
 
 This ensures agents can collaborate through shared state while keeping grader internals hidden.

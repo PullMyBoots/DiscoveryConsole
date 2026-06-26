@@ -69,13 +69,7 @@ def _main():
         grader._resource_override = ResourceConfig(**payload["resource_override"])
 
     tasks = [Task.from_dict(t) for t in payload["tasks"]]
-    # Forward island_id alongside codebase_path/tasks so the inner grader
-    # can scope hub reads (e.g. read_attempts(coral_dir, island_id=...))
-    # in multi-island runs. None in single-island mode.
-    grade_kwargs = {}
-    if "island_id" in payload:
-        grade_kwargs["island_id"] = payload["island_id"]
-    bundle = asyncio.run(grader.grade(payload["codebase_path"], tasks, **grade_kwargs))
+    bundle = asyncio.run(grader.grade(payload["codebase_path"], tasks))
 
     sys.stdout.write(json.dumps({"bundle": bundle.to_dict()}))
 
@@ -156,11 +150,6 @@ class SubprocessGrader:
         }
         if self._resource_override is not None:
             payload["resource_override"] = dataclasses.asdict(self._resource_override)
-        # Forward island_id so the worker-side grader.grade() can set
-        # self.island_id for hub reads. Key is omitted entirely when None
-        # (single-island mode) to keep payloads identical to the legacy shape.
-        if "island_id" in kwargs and kwargs["island_id"] is not None:
-            payload["island_id"] = kwargs["island_id"]
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._run_worker, payload)
 

@@ -19,34 +19,36 @@ coral ui --port 9000
 coral ui --no-open          # Don't auto-open browser
 ```
 
-You can also launch it alongside `coral start`:
+You can also launch the dashboard alongside a prepared run:
 
 ```bash
-coral start -c task.yaml run.ui=true
+coral start -c results/<task>/latest/.coral/config.yaml run.ui=true
 ```
 
 ## Dashboard tabs
 
+### Control
+
+Start, stop, and configure a run:
+- **Resource budget** — CPU, GPU, memory, and storage hints for eval jobs
+- **Agents and eval** — backend, model, reasoning effort, eval script, and eval profile
+- **Run** — total runtime, readiness gate, attempts, eval count, and token usage
+
 ### Overview
 
-The main view showing:
-- **Score chart** — Real-time plot of all agent scores over time, with per-agent lines and the best score highlighted
-- **Leaderboard** — Top attempts sorted by score
-- **Agent cards** — Status, current score, and activity for each agent
-- **Notes and skills** — Recent shared knowledge
-
-### Logs
-
-Live agent session logs:
-- Select an agent to view its conversation turns
-- Auto-scrolls to the latest output
-- Useful for debugging agent behavior in real-time
+Monitor live progress:
+- **Score trajectory** — Real-time plot of scores over eval sequence, with baseline lines when baselines are recorded
+- **Agent states** — `work_loop`, `reflect_loop`, waiting/eval state, duration, token usage, and current eval progress
 
 ### Knowledge
 
-Browse shared notes and skills:
-- **Notes** — Markdown documents with agent insights
-- **Skills** — Reusable tools packaged by agents
+Browse indexed run knowledge:
+- **External knowledge** — papers, repos, docs, datasets, and web references
+- **Practice knowledge** — per-agent eval sequence, score, eval report, method archive, and route summaries
+- **Skills** — reusable tools available to agents
+
+Low-level trace logs and eval logs are still written under `.coral/public/` for
+debugging and feedback, but they are not a top-level dashboard tab.
 
 ## Backend
 

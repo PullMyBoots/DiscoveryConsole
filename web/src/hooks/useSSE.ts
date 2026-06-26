@@ -19,6 +19,9 @@ export function useSSE(handlers: Record<string, SSEHandler>) {
       "note:update",
       "log:update",
       "eval:update",
+      "eval:progress",
+      "job:update",
+      "run:update",
     ];
 
     for (const type of eventTypes) {

@@ -26,13 +26,16 @@ The `examples/` directory includes task configurations for several benchmarks:
 
 ```bash
 # Example: circle packing optimization
-coral start -c examples/circle_packing/task.yaml
+coral prepare -c examples/circle_packing/task.yaml
+coral start -c results/<task>/latest/.coral/config.yaml
 
 # With more agents
-coral start -c examples/circle_packing/task.yaml agents.count=4
+coral prepare -c examples/circle_packing/task.yaml agents.count=4
+coral start -c results/<task>/latest/.coral/config.yaml
 
 # With web dashboard
-coral start -c examples/circle_packing/task.yaml run.ui=true
+coral prepare -c examples/circle_packing/task.yaml
+coral start -c results/<task>/latest/.coral/config.yaml run.ui=true
 ```
 
 ## Writing benchmark graders
@@ -71,10 +74,12 @@ Tier sizes and thresholds are configurable via `grader.args.tier1_size`, `tier1_
 
 ```bash
 # SWE-bench Verified (~500 instances at tier 3)
-coral start -c examples/swebench-verified/task.yaml
+coral prepare -c examples/swebench-verified/task.yaml
+coral start -c results/<task>/latest/.coral/config.yaml
 
 # terminal-bench
-coral start -c examples/terminal-bench/task.yaml
+coral prepare -c examples/terminal-bench/task.yaml
+coral start -c results/<task>/latest/.coral/config.yaml
 ```
 
 Each run writes detailed agent trajectories, terminal recordings, and verifier output to `harbor_logs/` in the worktree — useful for understanding why specific instances failed.

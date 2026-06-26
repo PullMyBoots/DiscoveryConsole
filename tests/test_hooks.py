@@ -142,6 +142,59 @@ def test_submit_eval_pending_then_graded():
             sys.path.pop(0)
 
 
+def test_submit_eval_stamps_l2_b_space_metadata_by_default():
+    """Existing tasks default to L2: ordinary evals score in hidden B-space."""
+    import sys
+
+    with tempfile.TemporaryDirectory() as d:
+        repo = _setup_repo_with_config(Path(d))
+
+        sys.path.insert(0, str(repo))
+        try:
+            (repo / "hello.py").write_text("print('space metadata')\n")
+            pending = submit_eval(
+                message="space metadata",
+                agent_id="agent-test",
+                workdir=str(repo),
+                wait=False,
+            )
+
+            assert pending.metadata["eval_level"] == "L2"
+            assert pending.metadata["eval_space"] == "B"
+            assert "eval_final" not in pending.metadata
+        finally:
+            sys.path.pop(0)
+
+
+def test_submit_eval_stamps_l1_a_space_metadata():
+    """L1 tasks use open A-space for the ranking eval."""
+    import sys
+
+    with tempfile.TemporaryDirectory() as d:
+        repo = _setup_repo_with_config(Path(d))
+        cfg_path = repo / ".coral" / "config.yaml"
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f)
+        cfg["evaluation"] = {"level": "L1"}
+        with open(cfg_path, "w") as f:
+            yaml.dump(cfg, f)
+
+        sys.path.insert(0, str(repo))
+        try:
+            (repo / "hello.py").write_text("print('l1')\n")
+            pending = submit_eval(
+                message="l1",
+                agent_id="agent-test",
+                workdir=str(repo),
+                wait=False,
+            )
+
+            assert pending.metadata["eval_level"] == "L1"
+            assert pending.metadata["eval_space"] == "A"
+        finally:
+            sys.path.pop(0)
+
+
 def test_submit_eval_no_changes():
     """submit_eval should fail if there are no changes to commit."""
     import sys
@@ -410,8 +463,7 @@ def test_setup_claude_settings_permissions():
         private_dir = str(coral_dir.resolve() / "private")
 
         worktree_str = str(worktree.resolve())
-        # Read access is scoped to the agent's island root (public/ in
-        # single-island mode), which transitively covers the bundled
+        # Read access covers the shared public state root, including bundled
         # subagent definitions under public/agents/.
         state_root_str = str(coral_dir.resolve() / "public")
         agents_dir = str(coral_dir.resolve() / "public" / "agents")
@@ -464,87 +516,18 @@ def test_setup_claude_settings_no_research():
         assert "WebFetch" in deny
 
 
-def test_submit_eval_multi_island_writes_to_island_attempts(tmp_path, monkeypatch):
-    """When .coral_island is set, submit_eval writes to islands/<id>/attempts/."""
-    import subprocess
-
-    from coral.config import CoralConfig
-    from coral.hooks.post_commit import submit_eval
-
-    # Build a minimal multi-island layout: coral_dir + a worktree
-    coral_dir = tmp_path / ".coral"
-    (coral_dir / "islands" / "1" / "attempts").mkdir(parents=True)
-    cfg = CoralConfig.from_dict(
-        {
-            "task": {"name": "t", "description": "d"},
-            "islands": {"count": 2},
-            "workspace": {
-                "results_dir": str(tmp_path / "results"),
-                "repo_path": str(tmp_path / "src"),
-            },
-        }
-    )
-    cfg.to_yaml(coral_dir / "config.yaml")
-
-    worktree = tmp_path / "worktree"
-    worktree.mkdir()
-    subprocess.run(
-        ["git", "init", "-b", "main"], cwd=str(worktree), check=True, capture_output=True
-    )
-    # Set repo-local identity so the commit performed inside submit_eval also
-    # has a user/email (CI runners don't carry a global identity).
-    subprocess.run(
-        ["git", "config", "user.email", "t@t"],
-        cwd=str(worktree),
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        ["git", "config", "user.name", "t"],
-        cwd=str(worktree),
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        ["git", "commit", "--allow-empty", "-m", "init"],
-        cwd=str(worktree),
-        check=True,
-        capture_output=True,
-    )
-    (worktree / "file.txt").write_text("change")
-    (worktree / ".coral_dir").write_text(str(coral_dir.resolve()))
-    (worktree / ".coral_agent_id").write_text("1-agent-1")
-    (worktree / ".coral_island").write_text("1")
-
-    attempt = submit_eval(
-        message="island-1 eval",
-        agent_id="1-agent-1",
-        workdir=str(worktree),
-        wait=False,
-    )
-
-    # Attempt JSON landed in islands/1/attempts/
-    expected = coral_dir / "islands" / "1" / "attempts" / f"{attempt.commit_hash}.json"
-    assert expected.exists(), f"attempt was not written to {expected}"
-    # Did NOT land in public/
-    assert not (coral_dir / "public" / "attempts" / f"{attempt.commit_hash}.json").exists()
-    # metadata.island_id stamped
-    assert (attempt.metadata or {}).get("island_id") == "1"
-
-
-def test_submit_eval_walks_up_for_multi_island_breadcrumbs(tmp_path):
-    """submit_eval from a worktree subdir still writes to that worktree's island."""
+def test_submit_eval_walks_up_for_worktree_breadcrumbs(tmp_path):
+    """submit_eval from a worktree subdir still writes to public attempts."""
     import subprocess
 
     from coral.config import CoralConfig
     from coral.hooks.post_commit import submit_eval
 
     coral_dir = tmp_path / ".coral"
-    (coral_dir / "islands" / "1" / "attempts").mkdir(parents=True)
+    (coral_dir / "public" / "attempts").mkdir(parents=True)
     cfg = CoralConfig.from_dict(
         {
             "task": {"name": "t", "description": "d"},
-            "islands": {"count": 2},
             "workspace": {
                 "results_dir": str(tmp_path / "results"),
                 "repo_path": str(tmp_path / "src"),
@@ -579,23 +562,21 @@ def test_submit_eval_walks_up_for_multi_island_breadcrumbs(tmp_path):
     )
     (subdir / "file.txt").write_text("change")
     (worktree / ".coral_dir").write_text(str(coral_dir.resolve()))
-    (worktree / ".coral_agent_id").write_text("1-agent-1")
-    (worktree / ".coral_island").write_text("1")
+    (worktree / ".coral_agent_id").write_text("agent-1")
 
     attempt = submit_eval(
-        message="island-1 eval from subdir",
-        agent_id="1-agent-1",
+        message="eval from subdir",
+        agent_id="agent-1",
         workdir=str(subdir),
         wait=False,
     )
 
-    expected = coral_dir / "islands" / "1" / "attempts" / f"{attempt.commit_hash}.json"
+    expected = coral_dir / "public" / "attempts" / f"{attempt.commit_hash}.json"
     assert expected.exists()
-    assert (attempt.metadata or {}).get("island_id") == "1"
 
 
-def test_submit_eval_single_island_unchanged(tmp_path):
-    """No .coral_island -> today's behavior: write to public/attempts/."""
+def test_submit_eval_writes_to_public_attempts(tmp_path):
+    """submit_eval writes to public/attempts/."""
     import subprocess
 
     from coral.config import CoralConfig
@@ -644,7 +625,7 @@ def test_submit_eval_single_island_unchanged(tmp_path):
     (worktree / ".coral_agent_id").write_text("agent-1")
 
     attempt = submit_eval(
-        message="single-island eval",
+        message="public eval",
         agent_id="agent-1",
         workdir=str(worktree),
         wait=False,
@@ -652,5 +633,3 @@ def test_submit_eval_single_island_unchanged(tmp_path):
 
     expected = coral_dir / "public" / "attempts" / f"{attempt.commit_hash}.json"
     assert expected.exists()
-    # No island_id stamped
-    assert "island_id" not in (attempt.metadata or {})

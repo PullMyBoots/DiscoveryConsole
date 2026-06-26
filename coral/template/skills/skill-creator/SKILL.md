@@ -19,11 +19,11 @@ Before drafting, identify what skill to build and confirm it doesn't already exi
 
 Scan these sources for repeated, reusable patterns:
 
-- **Git diffs**: `git log --stat -10` and `git diff HEAD~5` — look for repeated file types, similar transformations, recurring helper scripts written independently across commits
-- **Attempt history**: Read `.coral/attempts/` JSON files — which approaches recur? What tool sequences appear in multiple successful attempts?
+- **Attempt diffs**: Use `coral log --recent`, `coral log -n 10`, and `coral show <hash> --diff` — look for repeated file types, similar transformations, and helper scripts that recur across evaluated attempts
+- **Attempt history**: Use `coral log --search "<pattern>"` and `coral show <hash>` — which approaches recur, and what tool sequences appear in multiple successful attempts?
 - **Tool usage**: Review your own transcript — sequences of 3+ tool calls that repeat across tasks are skill candidates
-- **Cross-episode notes**: Run `coral notes --read all` — patterns under "Patterns That Work" not yet captured as skills are prime candidates
-- **Sibling techniques**: Check `.coral/graph_state/state.yaml` `siblings:` — if multiple agents converged on the same technique independently, it deserves a skill
+- **Practice knowledge**: Run `coral kb index practice --by score|route|agent|metric`, then `coral kb read <id>` for the specific node or route that looks reusable
+- **Notebook observations**: Run `coral kb notebook --agent <your-agent-id>` and inspect recent `coral kb note` entries for repeated validated moves
 
 ### Deduplication Check
 
@@ -237,11 +237,7 @@ The `grading.json` expectations array must use fields `text`, `passed`, and `evi
 
 ### Step 4: Aggregate and analyze
 
-1. **Aggregate into benchmark:**
-   ```bash
-   python -m scripts.aggregate_benchmark <workspace>/iteration-N --skill-name <name>
-   ```
-   Produces `benchmark.json` and `benchmark.md` with pass_rate, time, and tokens per configuration (mean ± stddev and delta).
+1. **Aggregate into benchmark:** write a small local aggregation script in the iteration workspace when the results are structured enough to justify it. The output should be `benchmark.json` and `benchmark.md` with pass_rate, time, and tokens per configuration (mean +/- stddev and delta). Do not call framework scripts unless they are present in the skill directory.
 
 2. **Analyst pass** — read `agents/analyzer.md` and surface patterns the aggregate stats might hide: non-discriminating assertions, high-variance evals, time/token tradeoffs.
 
@@ -323,18 +319,7 @@ Queries should be substantive enough that Claude would benefit from consulting a
 
 ### Run the Optimization Loop
 
-Save the eval set to the workspace, then run:
-
-```bash
-python -m scripts.run_loop \
-  --eval-set <path-to-trigger-eval.json> \
-  --skill-path <path-to-skill> \
-  --model <model-id-powering-this-session> \
-  --max-iterations 5 \
-  --verbose
-```
-
-This handles the full optimization loop: splits into 60% train / 40% test, evaluates the current description (3 runs per query), proposes improvements based on failures, and iterates up to 5 times. Best description is selected by test score to avoid overfitting.
+Save the eval set to the workspace, then evaluate the current description against the queries manually or with a local script you create for this skill. Split the queries into train/test, inspect false positives and false negatives, then revise the description once. Avoid overfitting the description to one exact wording.
 
 ### Apply Result
 
@@ -346,11 +331,10 @@ Take `best_description` from the JSON output and update the skill's SKILL.md fro
 
 Run unconditionally after all optimization is complete:
 
-```bash
-python -m scripts.package_skill <path/to/skill-folder>
-```
-
-This validates the skill structure and creates a distributable `.skill` file.
+- Verify the skill directory contains `SKILL.md` with valid frontmatter.
+- Verify referenced `scripts/`, `references/`, and `assets/` paths exist.
+- Run any bundled scripts with `--help` or a tiny smoke input when applicable.
+- Use `coral skills --read <name>` after installation to confirm the shared skill index can read it.
 
 ---
 
@@ -390,8 +374,6 @@ creator: 0-agent-2
 ---
 ```
 
-Skills without `creator:` are treated as bundled framework skills (the
-deep-research, librarian, organize-files, skill-creator set seeded into
-every island), and team-level processes that filter by author (migration,
-provenance UI) will silently exclude them. Always stamp `creator:` on
-agent-authored skills.
+Skills without `creator:` are treated as bundled framework skills, and
+team-level processes that filter by author (sharing, provenance UI) will
+silently exclude them. Always stamp `creator:` on agent-authored skills.

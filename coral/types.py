@@ -127,7 +127,7 @@ class ScoreBundle:
 
 # Budget classification for an attempt. Stored on `Attempt.metadata["budget_class"]`.
 #
-# - "real":         a genuine optimization attempt — counts toward plateau / heartbeat triggers.
+# - "real":         a genuine optimization attempt — can enter reflect_loop after scoring.
 # - "grader_error": grader timeout or grader-side exception — the eval machinery itself broke,
 #                   not a real fail of the agent's code.
 # - "tune":         agent-submitted in tune mode — config/hyperparam exploration.

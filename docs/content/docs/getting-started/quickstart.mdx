@@ -96,14 +96,16 @@ This runs the grader once and shows you the score. Fix any issues before proceed
 ## 5. Launch agents
 
 ```bash
-coral start -c my-task/task.yaml
+coral prepare -c my-task/task.yaml
+coral validate --run-dir my-task/results/<task>/latest/.coral
+coral start -c my-task/results/<task>/latest/.coral/config.yaml
 ```
 
 CORAL will:
-1. Create a `.coral/` shared state directory
+1. Prepare a timestamped `.coral/` shared state directory
 2. Create isolated git worktrees for each agent
-3. Generate a `CORAL.md` instruction file in each worktree
-4. Spawn the agents
+3. Generate an instruction file in each worktree
+4. Launch agents from the prepared timestamp
 
 ## 6. Monitor progress
 

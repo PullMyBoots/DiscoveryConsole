@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-# Schema version embedded in the persisted JSON so future readers can migrate.
+# Schema version embedded in the persisted JSON so future readers can upgrade.
 AGENT_STATE_SCHEMA_VERSION = 1
 
 
@@ -41,7 +41,7 @@ class RestartEvent:
 class AgentRuntimeState:
     """Persisted reliability state for a single agent.
 
-    `state` is one of "active", "heartbeat", "paused", "stopped".
+    `state` is one of "active", "reflect_loop", "paused", "stopped".
     `paused_until` is the wall-clock epoch second the pause expires; it is None
     when the agent is not currently paused.
     """

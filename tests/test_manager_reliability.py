@@ -34,6 +34,7 @@ from coral.agent.state import (
 )
 from coral.config import AgentConfig, CoralConfig
 from coral.hub.attempts import agent_in_grader_queue, write_attempt
+from coral.hub.kb import read_notebook
 from coral.types import Attempt
 from coral.workspace import ProjectPaths
 
@@ -350,12 +351,75 @@ def test_agent_prompt_request_interrupts_running_agent(monkeypatch, tmp_path: Pa
 
     mgr._apply_agent_control_requests()
 
-    assert calls == [(0, "Please inspect the latest failed eval.", "dashboard-prompt")]
+    assert len(calls) == 1
+    idx, prompt, prompt_source = calls[0]
+    assert idx == 0
+    assert prompt_source == "dashboard-prompt"
+    assert "You are in work_loop" in prompt
+    assert "coral kb notebook --agent agent-1" in prompt
+    assert "Please inspect the latest failed eval." in prompt
     assert mgr.handles == [new_handle]
+    notebook = read_notebook(tmp_path / ".coral", "agent-1")
+    assert "External Guidance" in notebook
+    assert "Please inspect the latest failed eval." in notebook
     saved = json.loads(control.read_text())
     assert saved["action"] == "idle"
     assert saved["prompt"] == ""
     assert saved["last_prompt_applied_at"]
+
+
+def test_resume_all_defaults_to_work_loop_and_records_instruction(monkeypatch, tmp_path: Path) -> None:
+    mgr = _deadline_manager(tmp_path, max_runtime_seconds=0)
+    agents_dir = tmp_path / "agents"
+    (agents_dir / "agent-1").mkdir(parents=True)
+    mgr.paths = ProjectPaths(
+        results_dir=tmp_path / "results",
+        task_dir=tmp_path,
+        run_dir=tmp_path,
+        snapshots_dir=tmp_path / "snapshots",
+        coral_dir=tmp_path / ".coral",
+        agents_dir=agents_dir,
+        repo_dir=tmp_path / "repo",
+    )
+    old_notebook = (
+        tmp_path
+        / ".coral"
+        / "public"
+        / "knowledge"
+        / "practice"
+        / "agents"
+        / "agent-1"
+        / "notebook.md"
+    )
+    old_notebook.parent.mkdir(parents=True)
+    old_notebook.write_text("# Notebook: agent-1\n\nold plan\n")
+    monkeypatch.setattr(mgr, "_start_gateway_if_enabled", lambda: None)
+    monkeypatch.setattr(mgr, "_start_grader_daemon", lambda: None)
+    monkeypatch.setattr(mgr, "_kill_old_agent_processes", lambda: None)
+    monkeypatch.setattr(mgr, "_load_saved_sessions", lambda: {"agent-1": "sess-1"})
+    monkeypatch.setattr("coral.agent.manager._validate_sessions", lambda sessions, coral_dir: sessions)
+    calls: list[tuple[str, str | None, str | None]] = []
+
+    def _fake_setup(agent_id: str, resume_session_id: str | None = None, prompt: str | None = None, **kwargs):
+        calls.append((agent_id, resume_session_id, prompt))
+        return _FakeAgentHandle(agent_id, alive=True)
+
+    monkeypatch.setattr(mgr, "_setup_and_start_agent", _fake_setup)
+
+    handles = mgr.resume_all(mgr.paths, instruction="Prefer route B after review.")
+
+    assert len(handles) == 1
+    assert calls[0][0] == "agent-1"
+    assert calls[0][1] == "sess-1"
+    assert calls[0][2] is not None
+    assert "You are in work_loop" in calls[0][2]
+    assert "coral kb notebook --agent agent-1" in calls[0][2]
+    notebook = read_notebook(tmp_path / ".coral", "agent-1")
+    assert "Prefer route B after review." in notebook
+    archive_dir = old_notebook.parent / "notebook_archive"
+    archived = list(archive_dir.glob("*.md"))
+    assert len(archived) == 1
+    assert "old plan" in archived[0].read_text()
 
 
 # ---------------------------------------------------------------------------
@@ -376,12 +440,12 @@ def test_restart_event_construction() -> None:
 
 def test_agent_runtime_state_roundtrip() -> None:
     rs = AgentRuntimeState(
-        state="heartbeat",
+        state="reflect_loop",
         paused_until=None,
         pause_count=2,
         last_fault_at="2026-04-29T01:00:00+00:00",
         state_started_at=12345.0,
-        state_detail="reflect, pivot",
+        state_detail="archive latest eval",
     )
     data = rs.to_dict()
     restored = AgentRuntimeState.from_dict(data)
@@ -551,21 +615,18 @@ def test_per_agent_latest_attempt_filter_excludes_other_agents(tmp_path: Path) -
     assert matched[0]["score"] == 1.0
 
 
-def test_monitor_loop_stall_watchdog_does_not_crash_multi_island(tmp_path):
-    """Regression: in multi-island mode the stall watchdog must not raise from
-    read_attempts(coral_dir) without an island_id."""
+def test_monitor_loop_stall_watchdog_reads_public_attempts(tmp_path):
+    """The stall watchdog can read public attempts without raising."""
     from coral.agent.manager import AgentManager
     from coral.config import CoralConfig
     from coral.workspace.project import ProjectPaths
 
     coral_dir = tmp_path / ".coral"
-    for i in range(2):
-        (coral_dir / "islands" / str(i) / "attempts").mkdir(parents=True)
+    (coral_dir / "public" / "attempts").mkdir(parents=True)
 
     cfg = CoralConfig.from_dict(
         {
             "task": {"name": "t", "description": "d"},
-            "islands": {"count": 2},
             "agents": {"count": 2, "timeout": 1},
         }
     )
@@ -583,10 +644,4 @@ def test_monitor_loop_stall_watchdog_does_not_crash_multi_island(tmp_path):
     # Directly exercise the read that crashed before the fix
     from coral.hub.attempts import read_attempts
 
-    if (coral_dir / "islands").exists():
-        # Simulate the new gather logic; if this raises, the test fails.
-        attempts: list = []
-        for s in mgr.specs:
-            if s.island_id is not None:
-                attempts.extend(read_attempts(coral_dir, island_id=s.island_id))
-        assert attempts == []  # empty islands, no errors raised
+    assert read_attempts(coral_dir) == []

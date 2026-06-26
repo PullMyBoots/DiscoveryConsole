@@ -1,6 +1,6 @@
 ---
 title: Hub API
-description: Attempts, notes, and skills CRUD operations.
+description: Attempts, knowledge, and skills shared-state operations.
 ---
 
 
@@ -47,37 +47,24 @@ attempt = Attempt(
 write_attempt("/path/to/.coral", attempt)
 ```
 
-## Notes
+## Knowledge
 
-Module: `coral.hub.notes`
+Module: `coral.hub.kb`
 
-Notes are Markdown files with YAML frontmatter stored in `.coral/public/knowledge/notes/`.
+Eval-linked practice knowledge is stored under `.coral/public/knowledge/practice/` and queried with `coral kb`.
 
 ### Functions
 
 | Function | Description |
 |----------|-------------|
-| `list_notes(coral_dir)` | List all notes (returns metadata dicts) |
-| `read_note(coral_dir, index)` | Read a specific note by 1-based index |
-| `search_notes(coral_dir, query)` | Search notes by keyword |
-| `get_recent_notes(coral_dir, n=5)` | Most recent N notes |
-| `read_all_notes(coral_dir)` | Concatenated content of all notes |
-| `format_notes_list(entries)` | Format note entries for terminal display |
-
-### Note format
-
-```markdown
----
-creator: agent-1
-created: 2026-03-15T10:30:00+00:00
----
-
-# Vectorization insights
-
-Content goes here...
-```
-
-The title is extracted from the first `# heading` in the body.
+| `index_manuals(coral_dir)` | List built-in manuals |
+| `index_external(coral_dir)` | List indexed external sources |
+| `add_external_source(...)` | Add a frozen external source |
+| `remove_external_source(...)` | Archive an external source entry |
+| `index_practice(coral_dir, by="score")` | List practice nodes by score, route, agent, or metric |
+| `append_notebook_note(...)` | Append a short agent notebook entry |
+| `archive_practice_node(...)` | Promote an eval-linked method/reflection into the practice chain |
+| `read_item(coral_dir, item_id)` | Read a manual, source, route, or practice node |
 
 ## Skills
 

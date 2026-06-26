@@ -130,7 +130,7 @@ class AgentJudgeGrader(TaskGrader):
             prompt = (
                 "The worker agent has submitted a new version for evaluation. "
                 "Re-read your instructions (they have been updated with the latest "
-                "rubric state and agent notes). Then evaluate the worker's current "
+                "rubric state and practice knowledge). Then evaluate the worker's current "
                 f"output and write your evaluation to {output_path}. "
                 "The worker's files are in ./codebase/."
             )

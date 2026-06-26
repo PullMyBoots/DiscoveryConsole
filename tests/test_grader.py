@@ -274,11 +274,21 @@ def test_grader_protocol_compliance():
 
 
 def _real_task() -> Task:
-    return Task(id="t", name="t", description="d", metadata={"budget_class": "real"})
+    return Task(
+        id="t",
+        name="t",
+        description="d",
+        metadata={"budget_class": "real", "eval_level": "L2", "eval_space": "B"},
+    )
 
 
 def _tune_task() -> Task:
-    return Task(id="t", name="t", description="d", metadata={"budget_class": "tune"})
+    return Task(
+        id="t",
+        name="t",
+        description="d",
+        metadata={"budget_class": "tune", "eval_level": "L2", "eval_space": "B"},
+    )
 
 
 class _StaticGrader(TaskGrader):
@@ -406,6 +416,67 @@ def test_task_grader_profile_resources_override_subprocess_env(tmp_path):
     assert env["OMP_NUM_THREADS"] == "4"
 
 
+def test_task_grader_report_score_builds_standard_eval_report():
+    class _ReportGrader(TaskGrader):
+        def evaluate(self):
+            return self.report_score(
+                0.82,
+                explanation="overall score",
+                accepted=True,
+                acceptance={"min_score": 0.75, "observed_score": 0.82},
+                metrics={
+                    "accuracy": {
+                        "value": 0.91,
+                        "direction": "maximize",
+                        "explanation": "prediction correctness",
+                    },
+                    "latency": {
+                        "value": 12.4,
+                        "direction": "minimize",
+                        "explanation": "end-to-end runtime",
+                    },
+                },
+                message_for_agent="Accuracy improved; latency is still weak.",
+            )
+
+    grader = _ReportGrader(config=GraderConfig(profile="quick"))
+    bundle = asyncio.run(grader.grade("/tmp/x", [_real_task()]))
+
+    report = bundle.metadata["eval_report"]
+    assert report["status"] == "success"
+    assert report["eval_level"] == "L2"
+    assert report["eval_space"] == "B"
+    assert report["eval_profile"] == "quick"
+    assert report["accepted"] is True
+    assert report["score"]["total"] == 0.82
+    assert report["acceptance"]["min_score"] == 0.75
+    assert report["metrics"]["accuracy"]["value"] == 0.91
+    assert report["metrics"]["latency"]["direction"] == "minimize"
+    assert "Accuracy improved" in report["message_for_agent"]
+    assert bundle.scores["accuracy"].explanation == "prediction correctness"
+
+
+def test_task_grader_fail_report_builds_standard_failure_report():
+    class _FailingGrader(TaskGrader):
+        def evaluate(self):
+            return self.fail_report(
+                error_message="solution.py exited with code 1",
+                error_type="runtime_error",
+                stage="run_cases",
+                log_path="eval_logs/abc/stderr.txt",
+            )
+
+    grader = _FailingGrader(config=GraderConfig(profile="quick"))
+    bundle = asyncio.run(grader.grade("/tmp/x", [_real_task()]))
+
+    report = bundle.metadata["eval_report"]
+    assert bundle.aggregated is None
+    assert report["status"] == "failed"
+    assert report["error_type"] == "runtime_error"
+    assert report["stage"] == "run_cases"
+    assert report["log_path"] == "eval_logs/abc/stderr.txt"
+
+
 def test_task_grader_stamps_eval_context_on_bundle():
     grader = _StaticGrader(
         config=GraderConfig(eval_version="eval_v2", profile="full"),
@@ -501,7 +572,7 @@ def test_loader_raises_when_entrypoint_set_but_venv_missing():
 
 
 def test_loader_raises_when_no_grader_configured():
-    """No entrypoint and no eval/grader.py → ValueError with migration hint."""
+    """No entrypoint and no eval/grader.py -> ValueError with upgrade hint."""
     with tempfile.TemporaryDirectory() as tmpdir:
         coral_dir = Path(tmpdir)
         config = CoralConfig(task=TaskConfig(name="t", description="d"))
@@ -509,22 +580,13 @@ def test_loader_raises_when_no_grader_configured():
             load_grader(config, coral_dir)
 
 
-# --- eval_logs_dir: island-aware path resolution ----------------------------
-#
-# Regression: the multi-island refactor changed the worktree symlink to point
-# at `.coral/islands/<island_id>/eval_logs/` (per-island) but left the grader
-# hardcoded to write into `.coral/public/eval_logs/`. The two paths diverged
-# and agents could not see their own eval logs. eval_logs_dir must mirror the
-# per-island layout used by attempts/skills/notes.
-
-
-def _bare_task_grader(private_dir: Path, codebase_path: Path, island_id=None) -> TaskGrader:
+def _bare_task_grader(private_dir: Path, codebase_path: Path) -> TaskGrader:
     """Build a TaskGrader with just enough state to exercise eval_logs_dir.
 
     TaskGrader is abstract (requires evaluate()), so we subclass with a noop
     that returns an empty ScoreBundle — the property under test never calls
-    evaluate() anyway. private_dir, codebase_path, and island_id are normally
-    set by the daemon before grade() runs; we set them as plain attributes.
+    evaluate() anyway. private_dir and codebase_path are normally set by the
+    daemon before grade() runs; we set them as plain attributes.
     """
 
     class _Noop(TaskGrader):
@@ -534,18 +596,17 @@ def _bare_task_grader(private_dir: Path, codebase_path: Path, island_id=None) ->
     g = _Noop(config=GraderConfig(args={}))
     g.private_dir = str(private_dir)
     g.codebase_path = str(codebase_path)
-    g.island_id = island_id
     return g
 
 
-def test_eval_logs_dir_single_island_writes_under_public():
-    """island_id=None → .coral/public/eval_logs/<checkout_dir_name>/ (legacy)."""
+def test_eval_logs_dir_writes_under_public():
+    """Eval logs are written under .coral/public/eval_logs/<checkout_dir_name>/."""
     with tempfile.TemporaryDirectory() as tmp:
         coral = Path(tmp)
         (coral / "private").mkdir()
         checkout = coral / "private" / "grader_checkouts" / "abc1234"
         checkout.mkdir(parents=True)
-        g = _bare_task_grader(coral / "private", codebase_path=checkout, island_id=None)
+        g = _bare_task_grader(coral / "private", codebase_path=checkout)
 
         out = g.eval_logs_dir
 
@@ -559,7 +620,7 @@ def test_report_progress_writes_jsonl_event():
         (coral / "private").mkdir()
         checkout = coral / "private" / "grader_checkouts" / "abc1234"
         checkout.mkdir(parents=True)
-        g = _bare_task_grader(coral / "private", codebase_path=checkout, island_id=None)
+        g = _bare_task_grader(coral / "private", codebase_path=checkout)
         g.config = GraderConfig(eval_version="eval_v3", profile="quick")
 
         g.report_progress(current=2, total=4, phase="evaluate", message="halfway")
@@ -574,38 +635,3 @@ def test_report_progress_writes_jsonl_event():
         assert event["message"] == "halfway"
         assert event["eval_version"] == "eval_v3"
         assert event["eval_profile"] == "quick"
-
-
-def test_eval_logs_dir_multi_island_writes_under_island_dir():
-    """island_id set → .coral/islands/<island_id>/eval_logs/<checkout_dir_name>/.
-
-    Mirrors the symlink that setup_shared_state creates at
-    `<worktree>/.claude/eval_logs/` (workspace/worktree.py), so the agent
-    can actually navigate to its own logs.
-    """
-    with tempfile.TemporaryDirectory() as tmp:
-        coral = Path(tmp)
-        (coral / "private").mkdir()
-        checkout = coral / "private" / "grader_checkouts" / "deadbeef"
-        checkout.mkdir(parents=True)
-        g = _bare_task_grader(coral / "private", codebase_path=checkout, island_id="0")
-
-        out = g.eval_logs_dir
-
-        assert out == coral / "islands" / "0" / "eval_logs" / "deadbeef"
-        assert out.is_dir()
-
-
-def test_eval_logs_dir_island_id_as_int_coerced_to_str():
-    """Daemon may pass island_id as int; path construction must not crash."""
-    with tempfile.TemporaryDirectory() as tmp:
-        coral = Path(tmp)
-        (coral / "private").mkdir()
-        checkout = coral / "private" / "grader_checkouts" / "feedface"
-        checkout.mkdir(parents=True)
-        g = _bare_task_grader(coral / "private", codebase_path=checkout, island_id=2)
-
-        out = g.eval_logs_dir
-
-        assert out == coral / "islands" / "2" / "eval_logs" / "feedface"
-        assert out.is_dir()

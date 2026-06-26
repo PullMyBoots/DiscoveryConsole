@@ -127,38 +127,18 @@ If a grader exceeds the timeout, the daemon kills the grader subprocess via `SIG
 
 The agent-side poll also has its own timeout (2x the grader timeout + 60s slack, minimum 300s). If the daemon hasn't finalized the attempt within this window, the agent receives a `STILL PENDING` message and can retry with `coral wait <hash>`.
 
-## Heartbeat actions
+## Work and Reflection Loops
 
-Heartbeat actions are periodic tasks triggered by the eval counter:
+Modern CORAL workbench runs are organized around two visible agent states:
 
-### Reflect (default: every 1 eval, per-agent)
+- `work_loop`: the agent implements, diagnoses, or explores a candidate method.
+- `reflect_loop`: the agent uses eval feedback and shared evidence to update
+  its route before returning to work.
 
-After each eval, the agent reviews its progress and decides whether to continue the current approach or pivot.
-
-### Consolidate (default: every 10 evals, global)
-
-A periodic knowledge-sharing step where agents write notes about their findings, helping other agents learn from their experience.
-
-### Custom actions
-
-Define your own heartbeat actions via CLI:
-
-```bash
-coral heartbeat set review --every 5 --prompt "Review alternative approaches"
-```
-
-Or in `task.yaml`:
-
-```yaml
-agents:
-  heartbeat:
-    - name: reflect
-      every: 1
-    - name: consolidate
-      every: 10
-      global: true
-```
+There is no interval or plateau heartbeat action system in the workbench loop.
+Reflection is driven by completed eval reports, practice archives, and
+outer-loop review notes.
 
 ## Global eval count
 
-The file `.coral/public/eval_count` tracks the total number of evals across all agents. Heartbeat actions with `global: true` use this counter, while per-agent actions use each agent's individual count.
+The file `.coral/public/eval_count` tracks the total number of evals across all agents.

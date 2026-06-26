@@ -41,7 +41,8 @@ Agents and the grader daemon communicate **entirely through the filesystem** —
 
 ## Directory layout
 
-When you run `coral start`, the following structure is created:
+When you run `coral prepare`, the following structure is created. Later,
+`coral start` launches agents from this prepared timestamp:
 
 ```
 results/<task-name>/<timestamp>/
@@ -49,13 +50,14 @@ results/<task-name>/<timestamp>/
 │   ├── config.yaml            # Task configuration (copy)
 │   ├── public/                # Visible to all agents
 │   │   ├── attempts/          # JSON records of each eval
-│   │   ├── notes/             # Agent-written insights
+│   │   ├── knowledge/         # Manuals, sources, agent seed briefs, practice archive
 │   │   ├── skills/            # Reusable tools/scripts
+│   │   ├── jobs/              # Open A-space compute job records
+│   │   ├── control/           # Dashboard/manager control state
 │   │   ├── logs/              # Agent session logs
-│   │   ├── heartbeat/         # Heartbeat action configs
 │   │   ├── eval_count         # Global eval counter
 │   │   ├── grader_daemon.pid  # Daemon process ID
-│   │   └── grader_daemon_heartbeat  # Daemon liveness timestamp
+│   │   └── grader_daemon_liveness  # Daemon liveness timestamp
 │   └── private/               # Hidden from agents
 │       ├── grader_venv/       # Isolated venv running the grader entrypoint
 │       └── grader_checkouts/  # Ephemeral worktrees for grading
@@ -64,6 +66,7 @@ results/<task-name>/<timestamp>/
     ├── agent-1/               # Git worktree for agent 1
     │   ├── .coral_dir         # Points to shared .coral/
     │   ├── .coral_agent_id    # This agent's ID
+    │   ├── CORAL_SHARED       # Symlink to .claude/ or .codex/ shared state dir
     │   ├── CORAL.md           # Generated instructions
     │   └── <task files>       # Seeded from workspace.repo_path
     │

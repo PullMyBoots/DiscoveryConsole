@@ -11,9 +11,9 @@ from datetime import datetime
 from pathlib import Path
 
 from coral.config import CoralConfig
-from coral.hub._island import island_root
 from coral.hub.checkpoint import init_checkpoint_repo
 from coral.workspace.repo import (
+    _commit_staged_changes,
     clone_or_init_repo,
     copy_private_data,
     copy_seed_directory,
@@ -49,75 +49,45 @@ def slugify(name: str) -> str:
 
 _SEED_SKILLS_DIR = Path(__file__).parent.parent / "template" / "skills"
 _SEED_AGENTS_DIR = Path(__file__).parent.parent / "template" / "agents"
-_ROLE_TEMPLATE_PATH = Path(__file__).parent.parent / "template" / "role_template.md"
 
 
-_PER_ISLAND_SUBDIRS = (
+_PUBLIC_SUBDIRS = (
     "attempts",
     "logs",
     "skills",
     "agents",
     "knowledge",
-    "heartbeat",
     "eval_logs",
-    "roles",
+    "jobs",
+    "datasets",
+    "control",
 )
 
 
 _KNOWLEDGE_SUBDIRS = (
-    "capsules",
-    "maps",
-    "packs",
-    "sources/papers",
-    "sources/repos",
-    "sources/web",
-    "sources/docs",
-    "sources/datasets",
-    "notes/research",
-    "notes/experiments",
-    "notes/synthesis",
-    "notes/open-questions",
+    "manuals",
+    "external/items",
+    "practice/agents",
     "briefs/agent-seeds",
-    "briefs/islands",
-    "briefs/island-themes",
-    "inbox",
-    "archive",
 )
 
 
-def _island_id_from_root(coral_dir: Path, island_root: Path) -> str | None:
-    """Return the island_id implied by island_root, or None for single-island."""
-    try:
-        rel = island_root.resolve().relative_to((coral_dir / "islands").resolve())
-        # rel is like Path("0"); take first segment
-        rel_str = str(rel)
-        return rel_str.split("/", 1)[0] if rel_str and rel_str != "." else None
-    except ValueError:
-        return None
-
-
-def _build_island_subtree(
+def _build_public_subtree(
     coral_dir: Path,
-    island_root: Path,
+    public_root: Path,
     effective_config_dir: Path,
     user_skill_paths: list[str],
 ) -> None:
-    """Create the per-island state directory tree and seed bundled assets.
-
-    Used once for ``public/`` in single-island mode, and once per
-    ``islands/<id>/`` in multi-island mode. Seeds bundled skills + bundled
-    subagent templates + initializes the checkpoint git repo for this island.
-    """
-    for sub in _PER_ISLAND_SUBDIRS:
-        (island_root / sub).mkdir(parents=True, exist_ok=True)
-    _ensure_knowledge_base(island_root / "knowledge")
-    _link_legacy_notes_dir(island_root)
+    """Create the shared public state tree and seed bundled assets."""
+    for sub in _PUBLIC_SUBDIRS:
+        (public_root / sub).mkdir(parents=True, exist_ok=True)
+    _ensure_knowledge_base(public_root / "knowledge")
 
     # Seed bundled skills from coral/template/skills/
     if _SEED_SKILLS_DIR.is_dir():
         for skill_dir in _SEED_SKILLS_DIR.iterdir():
             if skill_dir.is_dir():
-                dst = island_root / "skills" / skill_dir.name
+                dst = public_root / "skills" / skill_dir.name
                 if not dst.exists():
                     shutil.copytree(skill_dir, dst)
                     logger.info(f"Seeded skill: {skill_dir.name}")
@@ -128,7 +98,7 @@ def _build_island_subtree(
         if not src.is_absolute():
             src = (effective_config_dir / src).resolve()
         if src.is_dir():
-            dst = island_root / "skills" / src.name
+            dst = public_root / "skills" / src.name
             if dst.exists():
                 shutil.rmtree(dst)
             shutil.copytree(src, dst)
@@ -140,25 +110,16 @@ def _build_island_subtree(
     if _SEED_AGENTS_DIR.is_dir():
         for agent_file in _SEED_AGENTS_DIR.iterdir():
             if agent_file.is_file():
-                dst = island_root / "agents" / agent_file.name
+                dst = public_root / "agents" / agent_file.name
                 if not dst.exists():
                     shutil.copy2(agent_file, dst)
                     logger.info(f"Seeded agent template: {agent_file.name}")
 
-    # Per-island checkpoint git repo (one .git per island, scoped locks)
-    init_checkpoint_repo(
-        str(coral_dir),
-        island_id=_island_id_from_root(coral_dir, island_root),
-    )
+    init_checkpoint_repo(str(coral_dir))
 
 
 def _ensure_knowledge_base(knowledge_dir: Path) -> None:
-    """Create the unified knowledge-base skeleton.
-
-    The old CORAL convention exposed ``notes/`` as the top-level knowledge
-    surface. The new layout keeps notes under ``knowledge/notes/`` and keeps
-    raw/source artifacts, briefs, and inbox material in the same durable tree.
-    """
+    """Create the simplified index-first knowledge-base skeleton."""
     knowledge_dir.mkdir(parents=True, exist_ok=True)
     for sub in _KNOWLEDGE_SUBDIRS:
         (knowledge_dir / sub).mkdir(parents=True, exist_ok=True)
@@ -166,109 +127,72 @@ def _ensure_knowledge_base(knowledge_dir: Path) -> None:
     index = knowledge_dir / "index.md"
     if not index.exists():
         index.write_text(
-            "# Knowledge Index\n\n"
-            "## Read Order\n"
-            "1. Start with the relevant `packs/<agent-id>.md` file.\n"
-            "2. Open only the capsules named by that packet.\n"
-            "3. Read raw files under `sources/` only when a capsule says the raw source is needed.\n\n"
-            "## Start Here For Codex\n"
-            "- Add task context in `briefs/task-context.md`.\n"
-            "- Fill the eval trust design in `eval_spec.md` before launch.\n"
-            "- Add agent launch briefs in `briefs/agent-seeds/`.\n"
-            "- Add multi-island themes in `briefs/islands/` when islands are enabled.\n"
-            "- Convert useful sources into lightweight capsules in `capsules/`.\n"
-            "- Generate per-agent reading packets in `packs/`.\n"
-            "- Add experiment reflections in `notes/experiments/`.\n\n"
-            "## Active Maps\n"
-            "- Method routes: `maps/methods.md`\n"
-            "- Run notes: `notes/index.md`\n"
+            "# Knowledge Directory\n\n"
+            "This directory is an index-first knowledge base. Do not read it as a normal flat folder.\n\n"
+            "## Start Here\n"
+            "- `eval_spec.md`: the scoring contract and safety rules.\n"
+            "- `manuals/`: short framework manuals.\n"
+            "- `briefs/agent-seeds/`: Codex-generated starting plan and first eval script for each agent.\n\n"
+            "## Two Knowledge Types\n"
+            "- External knowledge: papers, repos, docs, datasets, and web references. Indexed by `external/index.jsonl` and stored under `external/items/`.\n"
+            "- Practice knowledge: eval-linked notes, routes, score curves, and reflections under `practice/agents/`.\n\n"
+            "## Optional Launch Bundles\n"
+            "`briefs/agent-seeds/` contains Codex-prepared starting routes and first-eval scripts. It is launch scaffolding, not a third knowledge store.\n\n"
+            "## Before And After Launch\n"
+            "- Before `coral start`: read these files directly; Codex should fill in `eval_spec.md`, external references, and agent seeds.\n"
+            "- After `coral start`: use `coral kb ...` inside the active run/timestamp.\n\n"
+            "## Use These Commands After Launch\n"
+            "- `coral kb index manual`: show manuals.\n"
+            "- `coral kb index external`: show external references.\n"
+            "- `coral kb index practice --by score|route|agent|metric`: show run experience by the view you need.\n"
+            "- `coral kb read <id>`: open one indexed item.\n"
+            "- `coral kb add external <path-or-url> --kind <kind> --title \"...\"`: add a reference.\n"
+            "- `coral kb note \"...\"`: add a practice note.\n"
         )
+    external_index = knowledge_dir / "external" / "index.jsonl"
+    if not external_index.exists():
+        external_index.write_text("")
 
     eval_spec = knowledge_dir / "eval_spec.md"
     if not eval_spec.exists():
         eval_spec.write_text(
             "# Eval Spec\n\n"
-            "## Breakthrough Metrics\n"
-            "- Define the metrics the run should improve.\n\n"
-            "## Guardrail Metrics\n"
-            "- Define minimum acceptable behavior and hard failure thresholds.\n\n"
-            "## Anti-Cheating and Overfitting Checks\n"
-            "- Define leakage checks, invalid-output checks, robustness cases, and "
-            "any held-out or stress evaluation.\n\n"
-            "## Scalar Score\n"
-            "- Define how breakthrough and guardrail metrics become the single "
-            "CORAL scheduling score.\n\n"
+            "## Agent API\n"
+            "- `coral eval -m \"...\"`: submit the current solution for the task's ranking space.\n"
+            "- `coral eval --tune -m \"...\"`: optional cheaper scoring for exploration, if supported.\n"
+            "- `coral run -- <command>`: run an open A-space exploration script with tracked logs/artifacts, if an isolated or explicitly enabled runner is configured.\n"
+            "- Document required files, input/output formats, and forbidden access here.\n\n"
+            "## Evaluation Level\n"
+            "- L1: A-space scoring is open to agents.\n"
+            "- L2: A-space is open exploration; B-space is hidden ranking eval.\n"
+            "- L3: A-space is open exploration; B-space is hidden iteration; C-space is sealed final eval.\n\n"
+            "## Metrics\n"
+            "- Define public metric names, directions, and safe explanations.\n"
+            "- Breakthrough metrics define the primary score or research improvement target.\n"
+            "- Guardrail metrics define correctness, runtime, memory, safety, and regression constraints.\n"
+            "- Anti-cheating checks define leakage, memorization, hidden-data access, and overfitting safeguards.\n"
+            "- Do not disclose hidden case IDs, answer keys, private weights, or exploitable scoring details.\n\n"
+            "## Acceptance\n"
+            "- Define hard requirements such as minimum score, required tests, runtime limit, memory limit, and leakage checks.\n\n"
+            "## Progress Protocol\n"
+            "- Long evals must call `self.report_progress(...)` so the control panel can render progress.\n\n"
             "## Eval Profiles\n"
-            "- quick:\n"
-            "- medium:\n"
-            "- full:\n"
-            "- stress:\n"
+            "- quick: same scoring mechanism, fewer cases/seeds, cheaper iteration, higher variance.\n"
+            "- medium: stronger signal at moderate cost.\n"
+            "- full: main validation profile.\n"
+            "- stress: robustness, leakage, or distribution-shift checks.\n\n"
+            "## Feedback Report\n"
+            "- Successful reports include total score, accepted status, top-5 rank context, self-history, baselines, and per-metric values/ranks.\n"
+            "- Failed reports include failure stage, error type, error message, and log path.\n"
         )
 
-    manifest = knowledge_dir / "manifest.jsonl"
-    if not manifest.exists():
-        manifest.write_text("")
+    try:
+        from coral.hub.kb import ensure_kb
 
-    notes_index = knowledge_dir / "notes" / "index.md"
-    if not notes_index.exists():
-        notes_index.write_text(
-            "# Notes Index\n\n"
-            "## Research\n"
-            "- (none yet)\n\n"
-            "## Experiments\n"
-            "- (none yet)\n\n"
-            "## Open Questions\n"
-            "- (none yet)\n"
-        )
-
-    methods_map = knowledge_dir / "maps" / "methods.md"
-    if not methods_map.exists():
-        methods_map.write_text(
-            "# Method Map\n\n"
-            "Keep this file short. List only active method families that should guide agent search.\n\n"
-            "## Active Routes\n"
-            "- (none yet)\n\n"
-            "## Failed Or Risky Routes\n"
-            "- (none yet)\n"
-        )
-
-    global_pack = knowledge_dir / "packs" / "global.md"
-    if not global_pack.exists():
-        global_pack.write_text(
-            "# Global Knowledge Packet\n\n"
-            "This is the shared lightweight entry point. Agent-specific packets should stay smaller.\n\n"
-            "## Always Read\n"
-            "- `eval_spec.md`\n"
-            "- `maps/methods.md`\n"
-            "- `notes/index.md`\n\n"
-            "## Source Rule\n"
-            "Prefer capsules over raw sources. Put newly found material in `inbox/` until reviewed.\n"
-        )
-
-
-def _link_legacy_notes_dir(island_root: Path) -> None:
-    """Expose ``notes`` as a compatibility alias for ``knowledge/notes``."""
-    notes_dir = island_root / "notes"
-    target = island_root / "knowledge" / "notes"
-
-    if notes_dir.is_symlink():
-        notes_dir.unlink()
-    elif notes_dir.exists():
-        # Preserve any pre-existing files by moving them into knowledge/notes.
-        target.mkdir(parents=True, exist_ok=True)
-        for entry in notes_dir.iterdir():
-            dst = target / entry.name
-            if dst.exists():
-                continue
-            shutil.move(str(entry), str(dst))
-        try:
-            notes_dir.rmdir()
-        except OSError:
-            return
-
-    if not notes_dir.exists():
-        rel = os.path.relpath(target.resolve(), island_root.resolve())
-        notes_dir.symlink_to(rel)
+        # Seeds manuals and ensures the new external/practice indices exist.
+        ensure_kb(knowledge_dir.parent.parent)
+    except Exception:
+        logger.debug("Failed to seed kb manuals", exc_info=True)
 
 
 def _copytree_replace(src: Path, dst: Path) -> None:
@@ -315,82 +239,23 @@ def _prepare_snapshots(
 
 
 def _seed_active_knowledge(coral_dir: Path, snapshots_dir: Path, config: CoralConfig) -> None:
-    """Seed each island's active knowledge base from the frozen snapshot."""
+    """Seed the active knowledge base from the frozen snapshot."""
     src = snapshots_dir / "knowledge"
-    if config.islands.count == 1:
-        destinations = [coral_dir / "public" / "knowledge"]
-    else:
-        destinations = [coral_dir / "islands" / str(i) / "knowledge" for i in range(config.islands.count)]
-
-    for dst in destinations:
-        if src.exists():
-            _copytree_replace(src, dst)
-        _ensure_knowledge_base(dst)
-        _link_legacy_notes_dir(dst.parent)
+    dst = coral_dir / "public" / "knowledge"
+    if src.exists():
+        _copytree_replace(src, dst)
+    _ensure_knowledge_base(dst)
 
 
-def seed_agent_role(
-    coral_dir: Path,
-    agent_id: str,
-    source: str | None = None,
-    base_dir: Path | None = None,
-    *,
-    island_id: str | int | None = None,
-) -> Path:
-    """Write the per-agent role description at the per-island roles dir.
-
-    The role describes *what the agent does* on the team — its posture, lane,
-    objectives, and accumulated self-knowledge. It is mutable and evolves over
-    the run.
-
-    Resolves to ``coral_dir/public/roles/<agent_id>.md`` in single-island
-    runs, or ``coral_dir/islands/<island_id>/roles/<agent_id>.md`` in
-    multi-island runs. The latter matches the symlink installed by
-    ``worktree.setup_shared_state``, so the agent's worktree
-    ``.claude/roles/<agent_id>.md`` resolves to the file we write here.
-
-    Idempotent: does nothing if the file already exists, so an agent's evolved
-    role description is never clobbered by a re-setup or resume.
-
-    When ``source`` is None (the default), renders the bundled gen-0 role
-    template — every agent starts with a blank role they earn into.
-
-    When ``source`` is set, copies that user-provided .md file as-is, giving
-    each agent a custom starting posture. ``source`` is a host path with ``~``
-    expansion; resolved against ``base_dir`` (typically the task directory)
-    when not absolute. Matches the path convention of ``apply_runtime_mounts``.
-
-    Raises:
-        FileNotFoundError: if ``source`` is given but does not resolve to a file.
-        ValueError: if ``source`` is given but ``base_dir`` is None and ``source``
-            is a relative path.
-    """
-    roles_dir = island_root(coral_dir, island_id) / "roles"
-    roles_dir.mkdir(parents=True, exist_ok=True)
-    dst = roles_dir / f"{agent_id}.md"
-    if dst.exists():
-        return dst
-
-    if source is None:
-        template = _ROLE_TEMPLATE_PATH.read_text()
-        rendered = template.format(
-            agent_id=agent_id,
-            created_at=datetime.now().isoformat(),
-        )
-        dst.write_text(rendered)
-        return dst
-
-    src = Path(source).expanduser()
-    if not src.is_absolute():
-        if base_dir is None:
-            raise ValueError(
-                f"role_file {source!r} is relative; base_dir is required to resolve it"
-            )
-        src = (base_dir / src).resolve()
-    if not src.is_file():
-        raise FileNotFoundError(f"role_file {source!r} (resolved to {src}) does not exist")
-    shutil.copy2(src, dst)
-    return dst
+def _expose_l1_grader_assets(task_source_dir: Path, repo_dir: Path) -> None:
+    """Expose the grader package inside the agent repo for open L1 tasks."""
+    grader_dir = task_source_dir / "grader"
+    if not grader_dir.is_dir():
+        return
+    dst = repo_dir / "grader"
+    _copytree_replace(grader_dir, dst)
+    logger.info("Exposed L1 grader assets in repo: grader/")
+    _commit_staged_changes(repo_dir, "Expose L1 grader assets")
 
 
 def create_project(config: CoralConfig, config_dir: Path | None = None) -> ProjectPaths:
@@ -454,32 +319,17 @@ def create_project(config: CoralConfig, config_dir: Path | None = None) -> Proje
 
     logger.debug(f"results_dir={results_dir}, task_dir={task_dir}, run_dir={run_dir}")
 
-    # Create shared state directories.
-    # Single-island (count == 1): keep today's exact layout under public/.
-    # Multi-island (count > 1):   build islands/<id>/ subtree per island, leave
-    #                              public/ minimal (only global meta).
+    # Create shared state directories under public/.
     (coral_dir / "public").mkdir(parents=True, exist_ok=True)
     (coral_dir / "private").mkdir(parents=True, exist_ok=True)
     agents_dir.mkdir(parents=True, exist_ok=True)
 
-    if config.islands.count == 1:
-        _build_island_subtree(
-            coral_dir,
-            coral_dir / "public",
-            effective_config_dir,
-            list(config.agents.skills),
-        )
-    else:
-        (coral_dir / "islands").mkdir(parents=True, exist_ok=True)
-        for i in range(config.islands.count):
-            island_root = coral_dir / "islands" / str(i)
-            island_root.mkdir(parents=True, exist_ok=True)
-            _build_island_subtree(
-                coral_dir,
-                island_root,
-                effective_config_dir,
-                list(config.agents.skills),
-            )
+    _build_public_subtree(
+        coral_dir,
+        coral_dir / "public",
+        effective_config_dir,
+        list(config.agents.skills),
+    )
 
     snapshots_dir = _prepare_snapshots(run_dir, task_source_dir, config)
     _seed_active_knowledge(coral_dir, snapshots_dir, config)
@@ -511,10 +361,17 @@ def create_project(config: CoralConfig, config_dir: Path | None = None) -> Proje
     seed_dir = task_source_dir / "seed"
     if seed_dir.is_dir():
         copy_seed_directory(seed_dir, repo_dir)
+    if config.evaluation.level == "L1":
+        _expose_l1_grader_assets(task_source_dir, repo_dir)
 
-    # Copy private grader data into .coral/ (hidden from agents)
-    if config.grader.private:
-        copy_private_data(config.grader.private, coral_dir, config_dir or Path.cwd())
+    # Copy private grader data into .coral/ (hidden from agents). L3 final
+    # assets live in the same sealed private root for post-search human/Codex
+    # validation; they are not part of the default agent eval loop.
+    private_paths = list(config.grader.private)
+    if config.evaluation.level == "L3":
+        private_paths.extend(config.grader.final.private)
+    if private_paths:
+        copy_private_data(private_paths, coral_dir, config_dir or Path.cwd())
 
     # Bootstrap the grader's isolated venv at .coral/private/grader_venv/ and
     # run any user-supplied install steps.

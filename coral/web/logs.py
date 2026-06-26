@@ -199,7 +199,7 @@ def parse_log_file(path: Path, offset: int = 0) -> tuple[list[LogTurn], int, Ses
             msg_type = obj.get("type", "")
 
             if msg_type == "coral":
-                # CORAL prompt injection (initial instruction, heartbeat, restart)
+                # CORAL prompt injection (initial instruction, reflect loop, restart)
                 subtype = obj.get("subtype", "")
                 if subtype == "prompt":
                     source = obj.get("source", "")
@@ -410,13 +410,9 @@ def list_log_files(coral_dir: Path) -> dict[str, list[dict[str, Any]]]:
     Returns:
         {agent_id: [{path, index, size_bytes, modified}]}
     """
-    from coral.hub._island import all_view_roots
-
     agents: dict[str, list[dict[str, Any]]] = {}
-    for view_root in all_view_roots(coral_dir):
-        logs_dir = view_root / "logs"
-        if not logs_dir.exists():
-            continue
+    logs_dir = coral_dir / "public" / "logs"
+    if logs_dir.exists():
         for log_file in sorted(logs_dir.glob("*.log")):
             parts = log_file.stem.rsplit(".", 1)
             agent_id = parts[0] if len(parts) == 2 else log_file.stem
@@ -428,8 +424,6 @@ def list_log_files(coral_dir: Path) -> dict[str, list[dict[str, Any]]]:
                 "size_bytes": stat.st_size,
                 "modified": stat.st_mtime,
             }
-            if view_root.name.isdigit():
-                entry["island_id"] = view_root.name
             agents.setdefault(agent_id, []).append(entry)
 
     for logs in agents.values():

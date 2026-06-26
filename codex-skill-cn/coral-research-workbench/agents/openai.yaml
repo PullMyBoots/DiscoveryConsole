@@ -1,0 +1,4 @@
+interface:
+  display_name: "CORAL 研究工作台"
+  short_description: "指导 Codex 主导、人在回路中的 CORAL 研究搜索。"
+  default_prompt: "使用 $coral-research-workbench 来框定研究问题、设计可信评估、准备知识、基线和差异化 agent 路线，并在用户审查回路中运行 CORAL 工作区。"

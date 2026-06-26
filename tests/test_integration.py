@@ -50,7 +50,8 @@ def test_full_workspace_creation():
         assert (paths.coral_dir / "public" / "attempts").is_dir()
         assert (paths.coral_dir / "public" / "logs").is_dir()
         assert (paths.coral_dir / "public" / "skills").is_dir()
-        assert (paths.coral_dir / "public" / "notes").is_dir()
+        assert (paths.coral_dir / "public" / "knowledge" / "practice" / "agents").is_dir()
+        assert not (paths.coral_dir / "public" / "notes").exists()
         assert (paths.coral_dir / "private").is_dir()
 
         # Reload config from disk
@@ -149,15 +150,17 @@ def test_coral_md_generation():
 
     # Must include core sections
     assert "Orientation" in md
-    assert "## 1. Plan" in md
-    assert "## 2. Edit" in md
-    assert "## 5. Share Knowledge" in md
+    assert "## 1. Research" in md
+    assert "## 2. Plan" in md
+    assert "## 3. Edit" in md
+    assert "## 6. Record Knowledge" in md
     assert "fully autonomous" in md
 
     # Must reference shared workspace commands
     assert "coral log --search" in md
     assert "coral log" in md
-    assert ".claude/knowledge/notes/" in md
+    assert "coral kb index practice" in md
+    assert ".claude/knowledge/practice/" in md
     assert ".claude/skills/" in md
 
 

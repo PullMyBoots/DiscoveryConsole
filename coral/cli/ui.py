@@ -9,7 +9,7 @@ from pathlib import Path
 
 from coral.cli._helpers import find_coral_dir
 from coral.config import CoralConfig
-from coral.workspace.project import create_project, slugify
+from coral.workspace.project import slugify
 
 
 def _ensure_ui_built() -> None:
@@ -208,7 +208,9 @@ def _prepare_prelaunch_run_if_task_dir(task: str | None, run: str | None) -> Pat
         return existing
 
     print("[coral] No timestamp run found; preparing a pre-launch dashboard workspace...")
-    paths = create_project(config, config_dir=task_dir)
+    from coral.agent.manager import AgentManager
+
+    paths = AgentManager(config, config_dir=task_dir).prepare_all()
     print(f"[coral] Prepared run workspace: {paths.run_dir}")
     return paths.coral_dir
 

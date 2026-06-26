@@ -31,7 +31,8 @@ agents:
 **Score**: `sum_radii / best_known_result` — 1.0 means matching the best known configuration.
 
 ```bash
-coral start -c examples/circle_packing/task.yaml
+coral prepare -c examples/circle_packing/task.yaml
+coral start -c results/<task>/latest/.coral/config.yaml
 ```
 
 ## Erdos
@@ -52,11 +53,12 @@ grader:
 ```
 
 ```bash
-coral start -c examples/erdos/task.yaml
+coral prepare -c examples/erdos/task.yaml
+coral start -c results/<task>/latest/.coral/config.yaml
 ```
 
-`coral start` will create `.coral/private/grader_venv/`, install the grader
-package into it, and spawn worker subprocesses from there during evaluation.
+`coral prepare` will create `.coral/private/grader_venv/`, install the grader
+package into it. Worker subprocesses are spawned during evaluation after the prepared timestamp is launched.
 
 ## Kernel Builder
 
@@ -65,7 +67,8 @@ package into it, and spawn worker subprocesses from there during evaluation.
 **What agents work on**: Assembly-level optimization, instruction scheduling, register allocation.
 
 ```bash
-coral start -c examples/kernel_builder/task.yaml
+coral prepare -c examples/kernel_builder/task.yaml
+coral start -c results/<task>/latest/.coral/config.yaml
 ```
 
 ## Kernel Engineering
@@ -75,7 +78,8 @@ coral start -c examples/kernel_builder/task.yaml
 **Score**: `1000 / runtime_us` — lower kernel runtime = higher score.
 
 ```bash
-coral start -c examples/kernel_engineering/trimul/task.yaml
+coral prepare -c examples/kernel_engineering/trimul/task.yaml
+coral start -c results/<task>/latest/.coral/config.yaml
 ```
 
 ## MNIST
@@ -85,7 +89,8 @@ coral start -c examples/kernel_engineering/trimul/task.yaml
 **What agents work on**: Neural network architecture, training procedures, data augmentation.
 
 ```bash
-coral start -c examples/mnist/task.yaml
+coral prepare -c examples/mnist/task.yaml
+coral start -c results/<task>/latest/.coral/config.yaml
 ```
 
 ## Spaceship Titanic
@@ -95,7 +100,8 @@ coral start -c examples/mnist/task.yaml
 **Score**: Classification accuracy (0.50 = naive, 0.80+ = strong).
 
 ```bash
-coral start -c examples/spaceship_titanic/task.yaml
+coral prepare -c examples/spaceship_titanic/task.yaml
+coral start -c results/<task>/latest/.coral/config.yaml
 ```
 
 ## Stanford COVID Vaccine
@@ -105,7 +111,8 @@ coral start -c examples/spaceship_titanic/task.yaml
 **What agents work on**: Feature engineering, model selection, sequence analysis.
 
 ```bash
-coral start -c examples/stanford_covid_vaccine/task.yaml
+coral prepare -c examples/stanford_covid_vaccine/task.yaml
+coral start -c results/<task>/latest/.coral/config.yaml
 ```
 
 ## Rubric-judged tasks
@@ -128,7 +135,8 @@ Four yamls exercise different experimental conditions:
 | `task_agent_judge.yaml` | No — dynamic rubric via `apex_judge` | `full` |
 
 ```bash
-coral start -c examples/race-japan-elderly/task.yaml
+coral prepare -c examples/race-japan-elderly/task.yaml
+coral start -c results/<task>/latest/.coral/config.yaml
 ```
 
 ### Eggshell Skull Legal Memorandum (APEX)
@@ -140,7 +148,8 @@ coral start -c examples/race-japan-elderly/task.yaml
 ```bash
 export ARCHIPELAGO_PATH=/path/to/archipelago
 python examples/apex-eggshell-skull/download_apex_data.py
-coral start -c examples/apex-eggshell-skull/task.yaml
+coral prepare -c examples/apex-eggshell-skull/task.yaml
+coral start -c results/<task>/latest/.coral/config.yaml
 ```
 
 ### Frontier BU Forecast (APEX)
@@ -150,7 +159,8 @@ coral start -c examples/apex-eggshell-skull/task.yaml
 **Grader**: reuses the same `apex_judge` package from eggshell-skull via `grader.setup: ["uv pip install -e ../apex-eggshell-skull/grader"]`, so two tasks share one judge implementation.
 
 ```bash
-coral start -c examples/apex-frontier-bu/task.yaml
+coral prepare -c examples/apex-frontier-bu/task.yaml
+coral start -c results/<task>/latest/.coral/config.yaml
 ```
 
 ## Creating your own

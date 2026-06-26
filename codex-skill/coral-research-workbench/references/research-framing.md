@@ -58,7 +58,9 @@ Startup knowledge should include what agents need to avoid rediscovering basics:
 - toolchain setup notes
 - user's prior notes and preferences
 
-Put these under `knowledge/`, register them in `manifest.jsonl`, and summarize them in `index.md` or notes. Use `inbox/` for unreviewed material found during or after a run.
+Register these with `coral kb add external` so they appear in
+`knowledge/external/index.jsonl`. Keep run-time conclusions in practice
+knowledge with `coral kb note` or `coral kb archive --attempt <hash>`.
 
 ## Agent Route Standard
 
@@ -73,7 +75,7 @@ Good differentiation axes:
 - different algorithm families
 - different data representations or loss functions
 
-For multi-island runs, islands should separate research cultures or method families. Agents within one island can share a theme but still need distinct starting tactics.
+Agent routes should separate technical method families, evidence targets, or diagnostic angles while still sharing the same public run knowledge.
 
 ## When to Stop Framing
 

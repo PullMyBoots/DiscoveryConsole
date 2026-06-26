@@ -56,6 +56,7 @@ export interface EvalProgress {
 export interface ResourceConfig {
   cpu_cores?: number;
   memory_gb?: number;
+  storage_gb?: number;
   gpu_count?: number;
   gpu_ids?: string[];
 }
@@ -73,7 +74,6 @@ export interface EvalJob {
   title: string;
   timestamp: string;
   queue_status: "waiting" | "evaluating";
-  island_id?: string | null;
   eval_version?: string;
   eval_profile?: string;
   resources?: ResourceConfig | Record<string, unknown>;
@@ -86,15 +86,30 @@ export interface EvalJobsResponse {
   jobs: EvalJob[];
 }
 
-export interface Note {
-  date: string;
-  title: string;
-  body: string;
-  creator?: string;
-  filename?: string;
-  relative_path?: string;
-  category?: string;
-  index: number;
+export interface ComputeJob {
+  job_id: string;
+  agent_id: string;
+  job_class: string;
+  profile: string;
+  command: string[];
+  cwd: string;
+  status: "running" | "succeeded" | "failed" | "timeout" | string;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  exit_code?: number | null;
+  timeout: number;
+  resources?: ResourceConfig | Record<string, unknown>;
+  stdout_path?: string;
+  stderr_path?: string;
+  artifact_dir?: string;
+  eval_level?: string;
+  eval_space?: string;
+  error?: string;
+}
+
+export interface ComputeJobsResponse {
+  jobs: ComputeJob[];
 }
 
 export interface Skill {
@@ -116,7 +131,6 @@ export interface KnowledgeSource {
   added_at?: string;
   status?: string;
   version?: string;
-  island_id?: string;
   size_bytes?: number;
   modified?: number;
   [key: string]: unknown;
@@ -243,8 +257,7 @@ export interface SkillDetail {
 
 export interface AgentStatus {
   agent_id: string;
-  island_id?: string | null;
-  status: "active" | "idle" | "stopped" | "paused" | "evaluating" | "waiting" | "heartbeat";
+  status: "active" | "idle" | "stopped" | "paused" | "evaluating" | "waiting" | "reflect_loop";
   sessions: number;
   last_activity: number | null;
   last_activity_age_seconds?: number | null;
@@ -391,6 +404,9 @@ export interface TaskConfig {
     description: string;
     tips?: string;
   };
+  evaluation?: {
+    level?: "L1" | "L2" | "L3";
+  };
   grader: {
     entrypoint?: string;
     setup?: string[];
@@ -415,6 +431,25 @@ export interface TaskConfig {
       max_workers?: number;
       resources?: ResourceConfig;
     };
+    final?: {
+      entrypoint?: string;
+      timeout?: number;
+      args?: Record<string, unknown>;
+      private?: string[];
+      direction?: "maximize" | "minimize";
+      eval_version?: string;
+      profile?: string;
+      profiles?: Record<
+        string,
+        {
+          label?: string;
+          timeout?: number;
+          args?: Record<string, unknown>;
+          resources?: ResourceConfig;
+        }
+      >;
+      resources?: ResourceConfig;
+    };
   };
   agents: {
     count: number;
@@ -432,28 +467,7 @@ export interface TaskConfig {
       config?: string;
       api_key?: string;
     };
-    warmstart?: {
-      enabled?: boolean;
-    };
-    heartbeat?: Array<Record<string, unknown>>;
     assignments?: AgentAssignmentConfig[];
-  };
-  islands?: {
-    count?: number;
-    migration?: {
-      enabled?: boolean;
-      every?: number;
-      rank_window?: number;
-      min_evals?: number;
-      dest_weighting?: string;
-      max_per_cycle?: number;
-      notify_island?: boolean;
-    };
-  };
-  sharing?: {
-    attempts?: boolean;
-    notes?: boolean;
-    skills?: boolean;
   };
   workspace?: {
     results_dir?: string;
@@ -497,38 +511,34 @@ export interface ControlReadinessResponse {
 
 export interface AgentPlanAgent {
   agent_id: string;
-  island_id?: string | null;
   title: string;
   summary: string;
   relative_path: string;
   path: string;
-}
-
-export interface AgentPlanTheme {
-  island_id: string;
-  title: string;
-  summary: string;
-  relative_path: string;
-  path: string;
-}
-
-export interface AgentPlanIsland {
-  island_id: string | null;
-  theme: AgentPlanTheme | null;
-  agents: AgentPlanAgent[];
+  eval_script_relative_path?: string;
+  eval_script_path?: string;
+  eval_script_exists?: boolean;
+  eval_script_executable?: boolean;
+  packet_relative_path?: string;
+  packet_path?: string;
+  packet_exists?: boolean;
+  bundle_complete?: boolean;
 }
 
 export interface ControlPlanResponse {
   status: "ready" | "partial" | "missing" | string;
   planned_agents: number;
   brief_count: number;
+  bundle_count?: number;
   missing_briefs: number;
-  island_count: number;
-  islands: AgentPlanIsland[];
+  missing_bundles?: number;
+  expected_agent_ids?: string[];
+  complete_agent_ids?: string[];
+  missing_agent_ids?: string[];
   agents: AgentPlanAgent[];
   paths: {
     agent_briefs: string;
-    island_themes: string;
+    initialization_plans?: string;
   };
 }
 
@@ -554,15 +564,15 @@ export const api = {
   config: () => get<TaskConfig>("/config"),
   attempts: () => get<Attempt[]>("/attempts"),
   evals: () => get<EvalJobsResponse>("/evals"),
+  jobs: () => get<ComputeJobsResponse>("/jobs"),
   leaderboard: (top = 20) => get<Attempt[]>(`/leaderboard?top=${top}`),
   attempt: (hash: string) => get<Attempt>(`/attempts/${hash}`),
   agentAttempts: (id: string) => get<Attempt[]>(`/attempts/agent/${id}`),
-  notes: () => get<Note[]>("/notes"),
   knowledge: () => get<KnowledgeResponse>("/knowledge"),
   evalSpec: () => get<EvalSpecResponse>("/knowledge/eval-spec"),
   review: () => get<ReviewSummary>("/review"),
   addKnowledgeNote: (payload: { title: string; body: string; category?: string }) =>
-    post<AddKnowledgeNoteResponse>("/knowledge/notes", payload),
+    post<AddKnowledgeNoteResponse>("/knowledge/review-notes", payload),
   addKnowledgeSource: (payload: { title: string; url?: string; category?: string; note?: string }) =>
     post<AddKnowledgeSourceResponse>("/knowledge/sources", payload),
   updateKnowledgeSourceStatus: (payload: {

@@ -1,6 +1,6 @@
 """Tests for CORAL.md template generation."""
 
-from coral.config import AgentConfig, CoralConfig, GraderConfig, TaskConfig
+from coral.config import AgentConfig, CoralConfig, EvaluationConfig, GraderConfig, TaskConfig
 from coral.template.coral_md import generate_coral_md
 
 
@@ -33,10 +33,11 @@ def test_generate_coral_md_has_required_sections():
 
     # Core structure
     assert "Orientation" in md
-    assert "## 1. Plan" in md
-    assert "## 2. Edit" in md
-    assert "## 3. Evaluate" in md
-    assert "## 5. Share Knowledge" in md
+    assert "## 1. Research" in md
+    assert "## 2. Plan" in md
+    assert "## 3. Edit" in md
+    assert "## 4. Evaluate" in md
+    assert "## 6. Record Knowledge" in md
     assert "Ground Rules" in md
 
     # Key behavioral instructions
@@ -50,8 +51,14 @@ def test_generate_coral_md_has_required_sections():
 
     # Shared state
     assert "coral log --search" in md
-    assert ".claude/knowledge/notes" in md
+    assert "coral kb index practice" in md
+    assert ".claude/knowledge/practice" in md
     assert ".claude/skills/" in md
+    assert "CORAL_OVERVIEW.md" in md
+    assert "CORAL_LOOPS.md" in md
+    assert "CORAL_SHARED" in md
+    assert ".coral/attempts" not in md
+    assert ".coral/jobs" not in md
 
 
 def test_generate_coral_md_without_optional_sections():
@@ -68,6 +75,33 @@ def test_generate_coral_md_without_optional_sections():
     assert "## Key Files" not in md
     assert "## Tips" not in md
     assert "higher is better" in md
+
+
+def test_generate_coral_md_hidden_eval_does_not_tell_agent_to_read_grader_code():
+    config = CoralConfig(
+        task=TaskConfig(name="Hidden Eval", description="d"),
+        evaluation=EvaluationConfig(level="L2"),
+        grader=GraderConfig(),
+        agents=AgentConfig(research=True),
+    )
+
+    md = generate_coral_md(config, "agent-1")
+
+    assert "read the grader code" not in md
+    assert "do not seek hidden grader internals" in md
+
+
+def test_generate_coral_md_l1_allows_public_grader_research():
+    config = CoralConfig(
+        task=TaskConfig(name="Open Eval", description="d"),
+        evaluation=EvaluationConfig(level="L1"),
+        grader=GraderConfig(),
+        agents=AgentConfig(research=True),
+    )
+
+    md = generate_coral_md(config, "agent-1")
+
+    assert "read the public grader code" in md
 
 
 def test_generate_coral_md_single_agent():
@@ -98,9 +132,12 @@ def test_generate_coral_md_single_agent():
     assert "Share Knowledge" not in md
     assert "Do not duplicate effort" not in md
 
-    # Single-agent still has notes/skills (for self-use)
-    assert "notes" in md.lower()
+    # Single-agent still has notebook/skills (for self-use)
+    assert "notebook" in md.lower()
     assert "skills" in md.lower()
+    assert "Skills Across Loops" in md
+    assert "work_loop:" in md
+    assert "reflect_loop:" in md
     assert "Record Knowledge" in md
 
 
@@ -117,8 +154,10 @@ def test_generate_coral_md_tune_guardrails_present():
         assert "Use `--tune` for" in md or "Use `--tune` for:" in md
         assert "Do NOT use `--tune` for" in md
         assert "final" in md.lower()
-        # Plateau-dodge guardrail.
-        assert "plateau" in md.lower()
+        # Tune attempts should not enter the real-eval reflect archive path.
+        assert "reflect_loop" in md
+        assert "Skills Across Loops" in md
+        assert "promote what was actually validated" in md
         # Per-grader description now ships in feedback, not in CORAL.md.
         # The template should advertise that contract so the agent knows
         # to look for the [--tune mode] line in their next eval result.
@@ -151,64 +190,49 @@ def test_generate_coral_md_score_direction_from_config():
         assert expected in md, f"Missing '{expected}' for direction '{direction}'"
 
 
-def test_generate_coral_md_single_island_has_no_island_mention():
-    """Without island_id, no provenance hint about islands is in the output."""
+def test_generate_coral_md_has_no_removed_topology_mention():
+    """Agent prompt does not include removed topology hints."""
     from coral.config import CoralConfig
     from coral.template.coral_md import generate_coral_md
 
     cfg = CoralConfig.from_dict({"task": {"name": "t", "description": "d"}})
     md = generate_coral_md(cfg, agent_id="agent-1")
-    assert "island" not in md.lower()
+    removed_term = "is" + "land"
+    assert removed_term not in md.lower()
 
 
-def test_generate_coral_md_multi_island_mentions_island(tmp_path):
-    """With island_id and islands.count > 1, the prompt mentions the agent's island."""
-    from coral.config import CoralConfig
-    from coral.template.coral_md import generate_coral_md
-
+def test_generate_coral_md_includes_codex_prepared_initialization_plan():
     cfg = CoralConfig.from_dict(
         {
             "task": {"name": "t", "description": "d"},
-            "islands": {"count": 4},
-        }
-    )
-    md = generate_coral_md(cfg, agent_id="2-agent-1", island_id="2")
-    md_lower = md.lower()
-    assert "island" in md_lower
-    assert "island `2`" in md or "island 2" in md, "expected mention of island 2"
-
-
-def test_generate_coral_md_includes_codex_prepared_starting_route():
-    cfg = CoralConfig.from_dict(
-        {
-            "task": {"name": "t", "description": "d"},
-            "islands": {"count": 2},
         }
     )
 
     md = generate_coral_md(
         cfg,
-        agent_id="0-agent-1",
-        island_id="0",
+        agent_id="agent-1",
         shared_dir=".codex",
-        island_theme="# Sparse Island\n\nFocus on sparse search.",
-        island_theme_path=".codex/knowledge/briefs/islands/0.md",
-        agent_seed_brief="# 0-agent-1\n\nStart from the sparse baseline.",
-        agent_seed_brief_path=".codex/knowledge/briefs/agent-seeds/0-agent-1.md",
+        agent_seed_brief="# agent-1\n\nStart from the sparse baseline.",
+        agent_seed_brief_path=".codex/knowledge/briefs/agent-seeds/agent-1.md",
     )
 
-    assert "Codex-prepared starting route" in md
-    assert "Sparse Island" in md
+    assert "Codex-prepared runnable initialization bundle" in md
     assert "sparse baseline" in md
-    assert ".codex/knowledge/briefs/agent-seeds/0-agent-1.md" in md
+    assert ".codex/knowledge/briefs/agent-seeds/agent-1.md" in md
 
 
-def test_generate_coral_md_uses_lightweight_knowledge_packet_orientation():
+def test_generate_coral_md_uses_index_first_kb_orientation():
     cfg = CoralConfig.from_dict({"task": {"name": "t", "description": "d"}})
 
     md = generate_coral_md(cfg, agent_id="agent-1", shared_dir=".codex")
 
-    assert ".codex/knowledge/packs/agent-1.md" in md
-    assert ".codex/knowledge/packs/global.md" in md
-    assert "Follow the packet's capsule links before raw sources" in md
-    assert "Do not scan raw papers/repos/web captures by default" in md
+    assert "coral kb notebook --agent agent-1" in md
+    assert "CORAL_OVERVIEW.md" in md
+    assert "CORAL_LOOPS.md" in md
+    assert "coral kb index manual" in md
+    assert "coral kb index external" in md
+    assert "coral kb index practice --by score" in md
+    assert ".codex/knowledge/briefs/agent-seeds/agent-1.eval.sh" in md
+    assert "index -> read -> act" in md
+    assert ".codex/roles" not in md
+    assert ".coral/attempts" not in md

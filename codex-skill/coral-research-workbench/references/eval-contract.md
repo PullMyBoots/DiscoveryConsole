@@ -7,22 +7,51 @@ Use this reference before writing or changing a CORAL grader for research search
 1. A grader must return one scalar score for CORAL scheduling.
 2. Multi-dimensional metrics must be returned as `ScoreBundle.scores`; CORAL
    records them under attempt `metadata.score_components`.
-3. The scalar score must combine:
+3. A grader should return `metadata.eval_report` through
+   `TaskGrader.report_score(...)` or `TaskGrader.fail_report(...)`. CORAL
+   augments this report with rank, top-5, self-history, and baselines after
+   the attempt is finalized.
+4. The scalar score must combine:
    - breakthrough metrics: what should improve
    - guardrail metrics: what must not break
    - hard failure checks: cheating, invalid outputs, timeouts, data leakage, format violations
-4. The eval version and profile must be recorded on every attempt.
+5. The eval version, profile, evaluation level, and evaluation space must be
+   recorded on every attempt.
+
+## Evaluation Level
+
+Choose one level with the user before writing the grader. The choice depends on
+the task and intended claim; L1/L2/L3 are alternatives for a fixed task, not
+three simultaneous modes.
+
+- L1: fixed/open scenario. The A-space scoring mechanism is public to agents.
+  Use this for tasks where the goal is direct program optimization against a
+  known objective.
+- L2: open exploration with hidden ranking. Agents can probe A-space, but
+  official ranking uses B-space to reduce overfitting to public probes.
+- L3: strict research validation. Agents iterate with A/B, while C-space is
+  sealed for final human/Codex validation after the CORAL run. CORAL stores the
+  C-space assets, but the normal agent eval loop should not expose or run them.
+
+The selected level should be written in `knowledge/eval_spec.md` with the
+allowed agent API and the hidden boundary for that task.
 
 Before launch, write the human-readable trust argument to
 `knowledge/eval_spec.md`. It must cover:
 
-- breakthrough metrics: what higher score should mean
-- guardrail metrics: what must stay above a floor
+- agent API: what commands/files the agent may use (`coral eval`, optional
+  `coral eval --tune`, `coral run -- <command>`, and any other public A-space
+  exploration API)
+- evaluation level: L1/L2/L3 and what A/B/C spaces mean for this task
+- public metric names, directions, and safe explanations
+- acceptance criteria: minimum score, required tests, runtime/memory limits,
+  leakage checks, or other hard gates
 - anti-cheating and overfitting checks: leakage, invalid outputs, held-out or
   stress cases, and robustness checks
-- scalar score: how metrics become the single CORAL scheduling score
-- profile intent: why `quick` is cheap enough for iteration and how `full` or
-  `stress` validates the claim
+- profile intent: quick/medium/full/stress must use the same scoring mechanism;
+  smaller profiles differ only by sample size, seeds, cases, or run count
+- feedback report: what the agent sees on success/failure and which details
+  must stay hidden
 
 The control panel Readiness checklist treats this file as a required Codex
 workspace-preparation artifact.
@@ -68,12 +97,55 @@ Inside a `TaskGrader`:
 ```python
 profile = self.profile
 version = self.eval_version
+level = self.eval_level
+space = self.eval_space
 args = self.args  # base grader.args merged with selected profile args
 resources = self.resources
 ```
 
 For multi-metric evals, return a `ScoreBundle` with the scalar scheduling score
-in `aggregated` and each public metric in `scores`. CORAL persists:
+in `aggregated` and each public metric in `scores`. Prefer:
+
+```python
+return self.report_score(
+    total_score,
+    explanation="scalar score explanation",
+    accepted=total_score >= min_score,
+    acceptance={"min_score": min_score, "observed_score": total_score},
+    metrics={
+        "accuracy": {
+            "value": accuracy,
+            "direction": "maximize",
+            "explanation": "Prediction correctness on the scoring split.",
+        },
+        "latency": {
+            "value": latency,
+            "direction": "minimize",
+            "explanation": "End-to-end runtime under the eval harness.",
+        },
+    },
+    message_for_agent="Accuracy improved; latency remains behind top attempts.",
+)
+```
+
+This is the concrete form of the eval-module protocol: the grader receives a
+candidate method through the agent codebase, returns one scalar scheduling
+score, and preserves per-dimension values in structured metrics. Do not create
+a separate ad hoc "dict-returning eval" protocol when a `TaskGrader` can express
+the same information through `report_score(...)`.
+
+For failures, return:
+
+```python
+return self.fail_report(
+    error_message="solution.py exited with code 1",
+    error_type="runtime_error",
+    stage="run_cases",
+    log_path="eval_logs/<attempt>/stderr.txt",
+)
+```
+
+CORAL persists:
 
 ```json
 {
@@ -82,10 +154,23 @@ in `aggregated` and each public metric in `scores`. CORAL persists:
     "score_components": {
       "breakthrough": {"value": 0.91, "explanation": "..."},
       "guardrail": {"value": 0.73, "explanation": "..."}
+    },
+    "eval_report": {
+      "status": "success",
+      "accepted": true,
+      "score": {"total": 0.82, "rank": 3, "top_k": []},
+      "self_history": {},
+      "baselines": [],
+      "metrics": {}
     }
   }
 }
 ```
+
+The daemon also appends a compact text rendering of this report to the attempt
+feedback so the agent sees total score, accepted status, rank, top-5, self
+history, baselines, and metric ranks after every eval. Failed reports include
+stage, error type, error message, and log path.
 
 The dashboard can plot either the total score or any named score component.
 Chronological chart order shows optimization progress and the running-best
@@ -132,6 +217,11 @@ Use stable names:
 
 Expose profile names in UI. Do not expose raw script paths to normal users.
 
+Quick/full/stress profiles must preserve the same internal scoring mechanism,
+metric definitions, and aggregation rule. If `quick` uses fewer samples or
+seeds, its report should make the lower confidence clear through its profile
+label, feedback, or metric explanations.
+
 ## Progress Protocol
 
 When eval duration is nontrivial, call:
@@ -169,6 +259,5 @@ During post-run review, `/api/review` flags mixed eval versions/profiles and
 missing eval identity. It also flags `eval_spec.md` edits made after attempts
 were scored. Treat those flags as reasons to bump `grader.eval_version`, re-run
 selected attempts, or start a new timestamp before making a cross-run claim.
-For multi-island runs, `/api/review` reads the active island knowledge
-snapshots for `eval_spec.md` and includes run-global public baseline attempts,
-so its evidence bundle should match `/api/control/readiness`.
+`/api/review` reads the public knowledge snapshot for `eval_spec.md` and public
+baseline attempts, so its evidence bundle should match `/api/control/readiness`.

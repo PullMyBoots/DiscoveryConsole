@@ -36,6 +36,7 @@ from coral.grader.loader import load_grader
 from coral.hub.attempts import (
     get_agent_attempts,
     increment_eval_count,
+    read_attempts,
     write_attempt,
 )
 from coral.types import (
@@ -65,8 +66,8 @@ def _run_grader(
     coral_dir: str,
     codebase_path: str,
     tasks: list,
-    island_id: str | int | None = None,
     resource_override: ResourceConfig | None = None,
+    eval_space: str | None = None,
 ) -> Any:
     """Resolve the entrypoint grader and run one grade() call.
 
@@ -74,20 +75,12 @@ def _run_grader(
     ``subprocess.run(timeout=grader.timeout)``, so a hung grader is killed
     there and reported back as a clean timed-out bundle.
 
-    ``island_id`` is forwarded so the grader can scope hub reads
-    (e.g. ``read_attempts(coral_dir, island_id=...)``) to the attempt's
-    own island in multi-island runs. ``None`` in single-island mode and
-    when the attempt was submitted without an island context — the inner
-    grader's ``self.island_id`` defaults to None in that case.
     """
     config = CoralConfig.from_yaml(config_path)
-    grade_kwargs: dict[str, Any] = {}
-    if island_id is not None:
-        grade_kwargs["island_id"] = island_id
-    grader = load_grader(config, coral_dir=coral_dir)
+    grader = load_grader(config, coral_dir=coral_dir, eval_space=eval_space)
     if resource_override is not None:
         grader._resource_override = resource_override
-    return asyncio.run(grader.grade(codebase_path, tasks, **grade_kwargs))
+    return asyncio.run(grader.grade(codebase_path, tasks))
 
 
 # --------------------------------------------------------------------------- #
@@ -206,13 +199,12 @@ def _compute_status(
     commit_hash: str,
     coral_dir: Path,
     minimize: bool,
-    island_id: str | None = None,
 ) -> str:
     """Compare `score` to this agent's previous best to classify the attempt."""
     if score is None:
         return "crashed"
 
-    prev_attempts = get_agent_attempts(str(coral_dir), agent_id, island_id=island_id)
+    prev_attempts = get_agent_attempts(str(coral_dir), agent_id)
     prev_scores = [
         a.score for a in prev_attempts if a.score is not None and a.commit_hash != commit_hash
     ]
@@ -227,31 +219,47 @@ def _compute_status(
     return "regressed"
 
 
-def _attempt_island_id(attempt: Attempt) -> str | None:
-    island_id = (attempt.metadata or {}).get("island_id")
-    if island_id is None:
-        return None
-    return str(island_id)
-
-
-def _resource_env(config: CoralConfig) -> dict[str, str]:
+def _resource_env(config: CoralConfig, *, eval_space: str | None = None) -> dict[str, str]:
     """Return selected eval resource env with profile overrides applied."""
-    return _effective_eval_resources(config).to_env()
+    return _effective_eval_resources(config, eval_space=eval_space).to_env()
 
 
-def _effective_eval_resources(config: CoralConfig) -> ResourceConfig:
+def _effective_eval_resources(config: CoralConfig, *, eval_space: str | None = None) -> ResourceConfig:
     """Return selected per-job eval resource demand with profile overrides."""
-    base = config.grader.resources
-    profile = config.grader.profiles.get(config.grader.profile)
+    grader_config = config.grader.for_space(eval_space or config.evaluation.score_space())
+    base = grader_config.resources
+    profile = grader_config.profiles.get(grader_config.profile)
     if profile is not None and profile.resources.active():
         override = profile.resources
         return ResourceConfig(
             cpu_cores=override.cpu_cores or base.cpu_cores,
             memory_gb=override.memory_gb or base.memory_gb,
+            storage_gb=override.storage_gb or base.storage_gb,
             gpu_count=override.gpu_count or base.gpu_count,
             gpu_ids=override.gpu_ids or base.gpu_ids,
         )
     return base
+
+
+def _scheduler_job_resources(config: CoralConfig, *, eval_space: str | None = None) -> ResourceConfig:
+    """Return per-job demand for daemon scheduling.
+
+    If a grader GPU pool is configured but the task omitted per-job GPU demand,
+    default each eval to one GPU. This matches the common GPU assumption that one
+    evaluator process owns one visible device unless the task says otherwise.
+    """
+    demand = _effective_eval_resources(config, eval_space=eval_space)
+    pool = config.grader.parallel.resources
+    has_gpu_pool = bool(pool.gpu_count > 0 or pool.gpu_ids)
+    has_gpu_demand = bool(demand.gpu_count > 0 or demand.gpu_ids)
+    if has_gpu_pool and not has_gpu_demand:
+        return ResourceConfig(
+            cpu_cores=demand.cpu_cores,
+            memory_gb=demand.memory_gb,
+            storage_gb=demand.storage_gb,
+            gpu_count=1,
+        )
+    return demand
 
 
 @dataclass
@@ -284,12 +292,13 @@ class _ResourceScheduler:
     def can_start_more(self) -> bool:
         return self.running < self.max_workers
 
-    def try_acquire(self) -> _ResourceLease | None:
+    def try_acquire(self, per_job: ResourceConfig | None = None) -> _ResourceLease | None:
         if not self.can_start_more():
             return None
-        cpu = self.per_job.cpu_cores
-        memory = self.per_job.memory_gb
-        gpu_count = self._required_gpu_count()
+        per_job = per_job or self.per_job
+        cpu = per_job.cpu_cores
+        memory = per_job.memory_gb
+        gpu_count = self._required_gpu_count(per_job)
 
         oversubscribed = False
         if self.pool.cpu_cores > 0 and cpu > 0 and self.used_cpu + cpu > self.pool.cpu_cores:
@@ -303,8 +312,8 @@ class _ResourceScheduler:
 
         assigned_gpus: tuple[str, ...] = ()
         if gpu_count > 0:
-            if self.per_job.gpu_ids:
-                assigned_gpus = tuple(self.per_job.gpu_ids)
+            if per_job.gpu_ids:
+                assigned_gpus = tuple(per_job.gpu_ids)
                 if self.free_gpu_ids:
                     if not set(assigned_gpus).issubset(set(self.free_gpu_ids)):
                         if self.running > 0:
@@ -331,7 +340,7 @@ class _ResourceScheduler:
             self.used_cpu += cpu
         if self.pool.memory_gb > 0 and memory > 0:
             self.used_memory += memory
-        resource = self._lease_resource(assigned_gpus)
+        resource = self._lease_resource(per_job, assigned_gpus)
         return _ResourceLease(
             resource=resource,
             env=resource.to_env(),
@@ -352,17 +361,18 @@ class _ResourceScheduler:
             order = {gpu_id: index for index, gpu_id in enumerate(self.gpu_id_pool)}
             self.free_gpu_ids = sorted(set(self.free_gpu_ids), key=lambda gpu_id: order.get(gpu_id, 9999))
 
-    def _required_gpu_count(self) -> int:
-        if self.per_job.gpu_count > 0:
-            return self.per_job.gpu_count
-        return len(self.per_job.gpu_ids)
+    def _required_gpu_count(self, per_job: ResourceConfig) -> int:
+        if per_job.gpu_count > 0:
+            return per_job.gpu_count
+        return len(per_job.gpu_ids)
 
-    def _lease_resource(self, assigned_gpus: tuple[str, ...]) -> ResourceConfig:
+    def _lease_resource(self, per_job: ResourceConfig, assigned_gpus: tuple[str, ...]) -> ResourceConfig:
         return ResourceConfig(
-            cpu_cores=self.per_job.cpu_cores,
-            memory_gb=self.per_job.memory_gb,
-            gpu_count=len(assigned_gpus) if assigned_gpus else self.per_job.gpu_count,
-            gpu_ids=list(assigned_gpus) if assigned_gpus else list(self.per_job.gpu_ids),
+            cpu_cores=per_job.cpu_cores,
+            memory_gb=per_job.memory_gb,
+            storage_gb=per_job.storage_gb,
+            gpu_count=len(assigned_gpus) if assigned_gpus else per_job.gpu_count,
+            gpu_ids=list(assigned_gpus) if assigned_gpus else list(per_job.gpu_ids),
         )
 
     @staticmethod
@@ -381,8 +391,20 @@ def _resource_scheduler(config: CoralConfig, *, max_workers: int) -> _ResourceSc
     return _ResourceScheduler(
         max_workers=max_workers,
         pool=pool,
-        per_job=_effective_eval_resources(config),
+        per_job=_scheduler_job_resources(config),
     )
+
+
+def _scheduler_job_resources_for_attempt(
+    coral_dir: Path | None,
+    attempt: Attempt,
+    config: CoralConfig,
+) -> ResourceConfig:
+    """Return scheduler demand for the attempt's trusted eval route."""
+    if coral_dir is None:
+        return _scheduler_job_resources(config)
+    _level, eval_space, _final = _trusted_eval_route(coral_dir, attempt, config)
+    return _scheduler_job_resources(config, eval_space=eval_space)
 
 
 def planned_evaluating_hashes(
@@ -390,6 +412,7 @@ def planned_evaluating_hashes(
     config: CoralConfig,
     *,
     max_workers: int | None = None,
+    coral_dir: Path | None = None,
 ) -> set[str]:
     """Return the pending attempts that would start in the first scheduler wave."""
     worker_count = max_workers or config.grader.parallel.max_workers
@@ -398,7 +421,7 @@ def planned_evaluating_hashes(
         return {attempt.commit_hash for attempt in pending[:worker_count]}
     hashes: set[str] = set()
     for attempt in pending:
-        lease = scheduler.try_acquire()
+        lease = scheduler.try_acquire(_scheduler_job_resources_for_attempt(coral_dir, attempt, config))
         if lease is None:
             continue
         hashes.add(attempt.commit_hash)
@@ -412,6 +435,7 @@ def _select_pending_wave(
     config: CoralConfig,
     *,
     max_workers: int,
+    coral_dir: Path | None = None,
 ) -> list[Attempt]:
     """Return the attempts to launch under the current daemon config.
 
@@ -428,7 +452,7 @@ def _select_pending_wave(
 
     wave: list[Attempt] = []
     for attempt in pending:
-        lease = scheduler.try_acquire()
+        lease = scheduler.try_acquire(_scheduler_job_resources_for_attempt(coral_dir, attempt, config))
         if lease is None:
             continue
         wave.append(attempt)
@@ -442,103 +466,6 @@ def _read_attempt_file(path: Path) -> Attempt | None:
         return Attempt.from_dict(json.loads(path.read_text()))
     except (json.JSONDecodeError, KeyError, OSError, TypeError):
         return None
-
-
-def _current_attempt_location(
-    coral_dir: Path,
-    commit_hash: str,
-    *,
-    fallback_island_id: str | int | None,
-) -> tuple[Attempt | None, str | None]:
-    """Find where an attempt record currently lives.
-
-    Migration can move a pending attempt while a grader worker is already
-    running on its commit. Finalization must write to the moved record's
-    current island, not the island captured when the worker was queued.
-    """
-    fallback = str(fallback_island_id) if fallback_island_id is not None else None
-    islands_dir = coral_dir / "islands"
-    if not islands_dir.exists():
-        attempt_path = coral_dir / "public" / "attempts" / f"{commit_hash}.json"
-        return _read_attempt_file(attempt_path), None
-
-    matches: list[tuple[Attempt, str, float]] = []
-    for island_dir in sorted(p for p in islands_dir.iterdir() if p.is_dir()):
-        path = island_dir / "attempts" / f"{commit_hash}.json"
-        if not path.exists():
-            continue
-        attempt = _read_attempt_file(path)
-        if attempt is None:
-            logger.warning(
-                "Skipping malformed attempt record while locating %s: %s",
-                commit_hash,
-                path,
-            )
-            continue
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            mtime = 0.0
-        matches.append((attempt, island_dir.name, mtime))
-
-    if not matches:
-        return None, fallback
-    if len(matches) > 1:
-        logger.warning(
-            "Attempt %s exists in multiple islands; using the current-looking record",
-            commit_hash[:12],
-        )
-    current_matches = [
-        (attempt, island_id, mtime)
-        for attempt, island_id, mtime in matches
-        if _attempt_island_id(attempt) == island_id
-    ]
-    if current_matches:
-        attempt, island_id, _mtime = max(current_matches, key=lambda item: item[2])
-        return attempt, island_id
-    attempt, island_id, _mtime = max(matches, key=lambda item: item[2])
-    return attempt, island_id
-
-
-def _move_eval_logs_to_current_island(
-    coral_dir: Path,
-    commit_hash: str,
-    *,
-    from_island_id: str | int | None,
-    to_island_id: str | int | None,
-) -> None:
-    """Move eval logs written through a stale island context to the final island."""
-    if from_island_id is None or to_island_id is None:
-        return
-    src_island = str(from_island_id)
-    dst_island = str(to_island_id)
-    if src_island == dst_island:
-        return
-
-    src = coral_dir / "islands" / src_island / "eval_logs" / commit_hash
-    if not src.exists():
-        return
-    dst = coral_dir / "islands" / dst_island / "eval_logs" / commit_hash
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        if src.is_dir():
-            shutil.copytree(src, dst, dirs_exist_ok=True)
-            shutil.rmtree(src, ignore_errors=True)
-        else:
-            if dst.exists():
-                if dst.is_dir():
-                    shutil.rmtree(dst)
-                else:
-                    dst.unlink()
-            shutil.move(str(src), str(dst))
-    except OSError as e:
-        logger.warning(
-            "Failed to move eval logs for %s from island %s to %s: %s",
-            commit_hash[:12],
-            src_island,
-            dst_island,
-            e,
-        )
 
 
 def _build_feedback(bundle: Any) -> str:
@@ -613,6 +540,380 @@ def _append_eval_logs_hint(
     return (feedback or "") + footer
 
 
+def _is_baseline_attempt(attempt: Attempt) -> bool:
+    metadata = attempt.metadata or {}
+    return bool(
+        metadata.get("baseline") is True
+        or metadata.get("is_baseline") is True
+        or metadata.get("reference") == "baseline"
+        or metadata.get("kind") == "baseline"
+    )
+
+
+def _score_sort_key(attempt: Attempt, *, minimize: bool) -> float:
+    value = float(attempt.score or 0.0)
+    return value if minimize else -value
+
+
+def _rank_for_score(scored: list[Attempt], commit_hash: str, *, minimize: bool) -> int | None:
+    ordered = sorted(scored, key=lambda a: _score_sort_key(a, minimize=minimize))
+    for index, attempt in enumerate(ordered, start=1):
+        if attempt.commit_hash == commit_hash:
+            return index
+    return None
+
+
+def _attempt_summary(attempt: Attempt, rank: int | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "agent_id": attempt.agent_id,
+        "commit_hash": attempt.commit_hash,
+        "score": attempt.score,
+        "title": attempt.title,
+        "timestamp": attempt.timestamp,
+    }
+    if rank is not None:
+        payload["rank"] = rank
+    return payload
+
+
+def _self_history(
+    attempts: list[Attempt],
+    *,
+    current: Attempt,
+    minimize: bool,
+) -> dict[str, Any]:
+    previous = [
+        a
+        for a in attempts
+        if a.agent_id == current.agent_id
+        and a.commit_hash != current.commit_hash
+        and a.score is not None
+        and not _is_baseline_attempt(a)
+    ]
+    previous.sort(key=lambda a: a.timestamp)
+    scores = [float(a.score) for a in previous]
+    current_score = float(current.score) if current.score is not None else None
+    prior_best = (min(scores) if minimize else max(scores)) if scores else None
+    prior_last = scores[-1] if scores else None
+    last_five = scores[-5:]
+    best_so_far: float | None = None
+    non_improving_streak_before = 0
+    for score in scores:
+        improved = best_so_far is None or (score < best_so_far if minimize else score > best_so_far)
+        if improved:
+            best_so_far = score
+            non_improving_streak_before = 0
+        else:
+            non_improving_streak_before += 1
+    non_improving_streak = non_improving_streak_before
+    if current_score is not None and prior_best is not None:
+        current_improved = current_score < prior_best if minimize else current_score > prior_best
+        non_improving_streak = 0 if current_improved else non_improving_streak_before + 1
+
+    history: dict[str, Any] = {
+        "attempts": len(scores),
+        "previous": prior_last,
+        "best_before": prior_best,
+        "mean_last_5": (sum(last_five) / len(last_five)) if last_five else None,
+        "non_improving_streak": non_improving_streak,
+    }
+    if current_score is not None and prior_last is not None:
+        history["delta_previous"] = current_score - prior_last
+    if current_score is not None and prior_best is not None:
+        history["delta_best_before"] = current_score - prior_best
+    return history
+
+
+def _baseline_summaries(
+    attempts: list[Attempt],
+    *,
+    current_score: float | None,
+    minimize: bool,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    baselines = [a for a in attempts if a.score is not None and _is_baseline_attempt(a)]
+    baselines.sort(key=lambda a: _score_sort_key(a, minimize=minimize))
+    result: list[dict[str, Any]] = []
+    for attempt in baselines[:limit]:
+        payload = _attempt_summary(attempt)
+        metadata = attempt.metadata or {}
+        for key in ("baseline_name", "method", "reference_name"):
+            if metadata.get(key):
+                payload["name"] = metadata[key]
+                break
+        else:
+            payload["name"] = attempt.title or "baseline"
+        if current_score is not None and attempt.score is not None:
+            payload["delta"] = current_score - float(attempt.score)
+        result.append(payload)
+    return result
+
+
+def _metric_rank(
+    attempts: list[Attempt],
+    *,
+    metric_name: str,
+    current_hash: str,
+    current_value: Any,
+    minimize: bool,
+) -> int | None:
+    values: list[tuple[str, float]] = []
+    for attempt in attempts:
+        components = (attempt.metadata or {}).get("score_components")
+        if not isinstance(components, dict):
+            continue
+        metric = components.get(metric_name)
+        if not isinstance(metric, dict):
+            continue
+        value = metric.get("value")
+        if isinstance(value, int | float):
+            values.append((attempt.commit_hash, float(value)))
+    if isinstance(current_value, int | float) and not any(h == current_hash for h, _ in values):
+        values.append((current_hash, float(current_value)))
+    if not values:
+        return None
+    values.sort(key=lambda item: item[1], reverse=not minimize)
+    for index, (commit_hash, _value) in enumerate(values, start=1):
+        if commit_hash == current_hash:
+            return index
+    return None
+
+
+def _augment_metric_report(
+    report: dict[str, Any],
+    *,
+    attempts: list[Attempt],
+    current: Attempt,
+    minimize: bool,
+) -> None:
+    components = current.metadata.get("score_components") if current.metadata else None
+    metrics = report.setdefault("metrics", {})
+    if not isinstance(metrics, dict):
+        metrics = {}
+        report["metrics"] = metrics
+    if isinstance(components, dict):
+        for name, component in components.items():
+            if not isinstance(component, dict):
+                continue
+            metric = metrics.setdefault(str(name), {})
+            if not isinstance(metric, dict):
+                metric = {}
+                metrics[str(name)] = metric
+            metric.setdefault("value", component.get("value"))
+            if component.get("explanation"):
+                metric.setdefault("explanation", component.get("explanation"))
+            metadata = component.get("metadata")
+            if isinstance(metadata, dict) and metadata.get("direction"):
+                metric.setdefault("direction", metadata.get("direction"))
+            metric.setdefault("direction", "minimize" if minimize else "maximize")
+
+    for name, metric in list(metrics.items()):
+        if not isinstance(metric, dict):
+            continue
+        metric_minimize = str(metric.get("direction", "")).lower() == "minimize"
+        rank = _metric_rank(
+            attempts,
+            metric_name=str(name),
+            current_hash=current.commit_hash,
+            current_value=metric.get("value"),
+            minimize=metric_minimize,
+        )
+        if rank is not None:
+            metric.setdefault("rank", rank)
+
+
+def _build_standard_eval_report(
+    *,
+    attempt: Attempt,
+    metadata: dict[str, Any],
+    status: str,
+    feedback: str,
+    coral_dir: Path,
+    config: CoralConfig,
+    grader_config: Any,
+    eval_level: str,
+    eval_space: str,
+    minimize: bool,
+) -> dict[str, Any]:
+    """Build or augment the standard report persisted as metadata.eval_report."""
+    existing = metadata.get("eval_report")
+    report = dict(existing) if isinstance(existing, dict) else {}
+    report["eval_level"] = eval_level
+    report["eval_space"] = eval_space
+    report["eval_profile"] = grader_config.profile
+
+    if attempt.score is None or status in {"crashed", "timeout"}:
+        report["status"] = "failed"
+        report.setdefault("error_type", "timeout" if status == "timeout" else "runtime_error")
+        report.setdefault("error_message", feedback or status)
+        report.setdefault("stage", status if status in {"timeout", "crashed"} else "evaluate")
+        report.setdefault("log_path", f"eval_logs/{attempt.commit_hash}/")
+        report.setdefault(
+            "message_for_agent",
+            "The eval failed before producing a score. Fix the reported error before optimizing.",
+        )
+        return report
+
+    report["status"] = "success"
+    report.setdefault("accepted", True)
+    direction = "minimize" if minimize else "maximize"
+    score_block = dict(report.get("score") or {})
+    score_block.setdefault("total", attempt.score)
+    score_block.setdefault("direction", direction)
+
+    attempts = read_attempts(coral_dir)
+    scored = [
+        a
+        for a in attempts
+        if a.score is not None
+        and a.budget_class == "real"
+        and not _is_baseline_attempt(a)
+        and a.commit_hash != attempt.commit_hash
+    ]
+    scored_with_current = [
+        *scored,
+        attempt,
+    ]
+    rank = _rank_for_score(scored_with_current, attempt.commit_hash, minimize=minimize)
+    if rank is not None:
+        score_block.setdefault("rank", rank)
+    ordered = sorted(scored_with_current, key=lambda a: _score_sort_key(a, minimize=minimize))
+    score_block.setdefault(
+        "top_k",
+        [_attempt_summary(a, rank=i) for i, a in enumerate(ordered[:5], start=1)],
+    )
+    report["score"] = score_block
+    report.setdefault(
+        "self_history",
+        _self_history(scored_with_current, current=attempt, minimize=minimize),
+    )
+    report.setdefault(
+        "baselines",
+        _baseline_summaries(
+            attempts,
+            current_score=float(attempt.score) if attempt.score is not None else None,
+            minimize=minimize,
+        ),
+    )
+    _augment_metric_report(report, attempts=scored_with_current, current=attempt, minimize=minimize)
+    report.setdefault(
+        "message_for_agent",
+        "Use rank, self-history, baseline deltas, and metric ranks to decide the next change.",
+    )
+    return report
+
+
+def _format_eval_report_feedback(report: dict[str, Any]) -> str:
+    """Render a compact agent-facing summary from metadata.eval_report."""
+    if report.get("status") == "failed":
+        parts = [
+            "### Eval report",
+            "Result status: failed",
+            f"Error type: {report.get('error_type', 'runtime_error')}",
+            f"Stage: {report.get('stage', 'evaluate')}",
+            f"Error: {report.get('error_message', '')}",
+        ]
+        if report.get("log_path"):
+            parts.append(f"Logs: `{report['log_path']}`")
+        if report.get("message_for_agent"):
+            parts.append(str(report["message_for_agent"]))
+        return "\n".join(parts)
+
+    score = report.get("score") if isinstance(report.get("score"), dict) else {}
+    parts = [
+        "### Eval report",
+        "Result status: success",
+        f"Accepted: {'yes' if report.get('accepted') else 'no'}",
+        f"Total score: {score.get('total')}",
+    ]
+    if score.get("rank") is not None:
+        parts.append(f"Rank: {score.get('rank')}")
+    history = report.get("self_history")
+    if isinstance(history, dict):
+        parts.append(
+            "Self history: "
+            f"attempts={history.get('attempts')}, "
+            f"previous={history.get('previous')}, "
+            f"best_before={history.get('best_before')}, "
+            f"mean_last_5={history.get('mean_last_5')}, "
+            f"delta_previous={history.get('delta_previous')}, "
+            f"delta_best={history.get('delta_best_before')}, "
+            f"no_improve={history.get('non_improving_streak')}"
+        )
+    baselines = report.get("baselines")
+    if isinstance(baselines, list) and baselines:
+        compact = ", ".join(
+            f"{b.get('name', b.get('agent_id', 'baseline'))}: {b.get('score')} (delta {b.get('delta')})"
+            for b in baselines[:3]
+            if isinstance(b, dict)
+        )
+        if compact:
+            parts.append(f"Baselines: {compact}")
+    top_k = score.get("top_k")
+    if isinstance(top_k, list) and top_k:
+        compact_top = ", ".join(
+            f"#{item.get('rank')} {item.get('agent_id')} {item.get('score')}"
+            for item in top_k[:5]
+            if isinstance(item, dict)
+        )
+        if compact_top:
+            parts.append(f"Top 5: {compact_top}")
+    metrics = report.get("metrics")
+    if isinstance(metrics, dict) and metrics:
+        metric_parts = []
+        for name, metric in list(metrics.items())[:8]:
+            if isinstance(metric, dict):
+                metric_parts.append(
+                    f"{name}={metric.get('value')} rank={metric.get('rank')} ({metric.get('direction')})"
+                )
+        if metric_parts:
+            parts.append("Metrics: " + "; ".join(metric_parts))
+    if report.get("message_for_agent"):
+        parts.append(str(report["message_for_agent"]))
+    return "\n".join(parts)
+
+
+def _trusted_eval_route(coral_dir: Path, attempt: Attempt, config: CoralConfig) -> tuple[str, str, bool]:
+    """Return trusted eval routing for a pending attempt.
+
+    Public attempt JSON is agent-editable shared state. C-space routing must
+    come from the private submit ledger written by `coral eval --final`, not
+    from metadata embedded in the public attempt file.
+    """
+    request_path = coral_dir / "private" / "eval_requests" / f"{attempt.commit_hash}.json"
+    if request_path.is_file():
+        try:
+            data = json.loads(request_path.read_text())
+        except (json.JSONDecodeError, OSError, TypeError):
+            data = {}
+        if data.get("commit_hash") == attempt.commit_hash:
+            level = str(data.get("eval_level") or config.evaluation.level).upper()
+            final = bool(data.get("eval_final"))
+            try:
+                space = config.evaluation.score_space(final=final)
+            except ValueError:
+                logger.warning(
+                    "Ignoring invalid final route for %s under evaluation.level=%s",
+                    attempt.commit_hash[:12],
+                    config.evaluation.level,
+                )
+                final = False
+                space = config.evaluation.score_space(final=False)
+            recorded_space = str(data.get("eval_space") or "").upper()
+            if recorded_space and recorded_space != space:
+                logger.warning(
+                    "Ignoring inconsistent private eval route for %s: recorded %s, expected %s",
+                    attempt.commit_hash[:12],
+                    recorded_space,
+                    space,
+                )
+            return level, space, final
+
+    # Legacy pending attempts predate the private route ledger. Do not trust
+    # public metadata to promote them into C-space.
+    return config.evaluation.level, config.evaluation.score_space(final=False), False
+
+
 def _grade_one(
     attempt: Attempt,
     config_path: Path,
@@ -621,8 +922,13 @@ def _grade_one(
     resource_override: ResourceConfig | None = None,
 ) -> Attempt:
     """Grade a single pending attempt and return the finalized Attempt record."""
-    grading_island_id = _attempt_island_id(attempt)
-    resource_env = resource_override.to_env() if resource_override is not None else _resource_env(config)
+    eval_level, eval_space, eval_final = _trusted_eval_route(coral_dir, attempt, config)
+    grader_config = config.grader.for_space(eval_space)
+    resource_env = (
+        resource_override.to_env()
+        if resource_override is not None
+        else _resource_env(config, eval_space=eval_space)
+    )
     # Task.metadata is the canonical channel for surfacing per-attempt context
     # to the user's grader (read via TaskGrader.tune / .budget_class).
     # Final budget_class may flip to "grader_error" below.
@@ -635,13 +941,16 @@ def _grade_one(
             "budget_class": budget_class,
             "agent_id": attempt.agent_id,
             "commit_hash": attempt.commit_hash,
-            "eval_version": config.grader.eval_version,
-            "eval_profile": config.grader.profile,
+            "eval_level": eval_level,
+            "eval_space": eval_space,
+            "eval_final": eval_final,
+            "eval_version": grader_config.eval_version,
+            "eval_profile": grader_config.profile,
             "resources": resource_env,
         },
     )
-    timeout = config.grader.timeout
-    minimize = config.grader.direction == "minimize"
+    timeout = grader_config.timeout
+    minimize = grader_config.direction == "minimize"
     repo_dir = _repo_dir(coral_dir)
     checkout_path = _grader_checkouts_dir(coral_dir) / attempt.commit_hash
 
@@ -659,8 +968,8 @@ def _grade_one(
                 str(coral_dir),
                 str(checkout_path),
                 [task],
-                island_id=grading_island_id,
                 resource_override=resource_override,
+                eval_space=eval_space,
             )
             score = bundle.aggregated
             feedback = _build_feedback(bundle)
@@ -683,18 +992,7 @@ def _grade_one(
         feedback = str(e)
         budget_class = BUDGET_CLASS_GRADER_ERROR
 
-    current_attempt, final_island_id = _current_attempt_location(
-        coral_dir,
-        attempt.commit_hash,
-        fallback_island_id=grading_island_id,
-    )
-    base_attempt = current_attempt or attempt
-    _move_eval_logs_to_current_island(
-        coral_dir,
-        attempt.commit_hash,
-        from_island_id=grading_island_id,
-        to_island_id=final_island_id,
-    )
+    base_attempt = attempt
 
     if grader_completed:
         status = _compute_status(
@@ -703,25 +1001,59 @@ def _grade_one(
             base_attempt.commit_hash,
             coral_dir,
             minimize,
-            island_id=final_island_id,
         )
+
+    # Carry forward any pending metadata the grader bundle didn't overwrite,
+    # then stamp the final budget_class (always wins over any pending value).
+    for k, v in (base_attempt.metadata or {}).items():
+        metadata.setdefault(k, v)
+    metadata["eval_level"] = eval_level
+    metadata["eval_space"] = eval_space
+    if eval_final:
+        metadata["eval_final"] = True
+    else:
+        metadata.pop("eval_final", None)
+    metadata["eval_version"] = grader_config.eval_version
+    metadata["eval_profile"] = grader_config.profile
+    metadata["resources"] = resource_env
+    metadata["budget_class"] = budget_class
+
+    report_attempt = Attempt(
+        commit_hash=base_attempt.commit_hash,
+        agent_id=base_attempt.agent_id,
+        title=base_attempt.title,
+        score=score,
+        status=status,
+        parent_hash=base_attempt.parent_hash,
+        timestamp=base_attempt.timestamp,
+        feedback=feedback,
+        shared_state_hash=base_attempt.shared_state_hash,
+        parent_shared_state_hash=base_attempt.parent_shared_state_hash,
+        metadata=metadata,
+    )
+    eval_report = _build_standard_eval_report(
+        attempt=report_attempt,
+        metadata=metadata,
+        status=status,
+        feedback=feedback,
+        coral_dir=coral_dir,
+        config=config,
+        grader_config=grader_config,
+        eval_level=eval_level,
+        eval_space=eval_space,
+        minimize=minimize,
+    )
+    metadata["eval_report"] = eval_report
+
+    report_feedback = _format_eval_report_feedback(eval_report)
+    if report_feedback:
+        feedback = f"{feedback}\n\n{report_feedback}" if feedback else report_feedback
 
     # Append the per-attempt eval_logs path so the agent can always find
     # their trace logs, regardless of which feedback path produced this
     # result (success / timeout / crashed). This is the universal safety
     # net — see _append_eval_logs_hint for the contract.
     feedback = _append_eval_logs_hint(feedback, attempt.commit_hash, config.agents.runtime)
-
-    # Carry forward any pending metadata the grader bundle didn't overwrite,
-    # then stamp the final budget_class (always wins over any pending value).
-    for k, v in (base_attempt.metadata or {}).items():
-        metadata.setdefault(k, v)
-    if final_island_id is not None:
-        metadata["island_id"] = final_island_id
-    metadata.setdefault("eval_version", config.grader.eval_version)
-    metadata.setdefault("eval_profile", config.grader.profile)
-    metadata.setdefault("resources", resource_env)
-    metadata["budget_class"] = budget_class
 
     finalized = Attempt(
         commit_hash=base_attempt.commit_hash,
@@ -737,9 +1069,9 @@ def _grade_one(
         parent_shared_state_hash=base_attempt.parent_shared_state_hash,
         metadata=metadata,
     )
-    write_attempt(str(coral_dir), finalized, island_id=final_island_id)
+    write_attempt(str(coral_dir), finalized)
     with _eval_count_lock:
-        count = increment_eval_count(coral_dir, island_id=final_island_id)
+        count = increment_eval_count(coral_dir)
     logger.info(
         "Graded #%d %s -> score=%s status=%s",
         count,
@@ -779,13 +1111,8 @@ def _score_components_from_bundle(bundle: Any) -> dict[str, dict[str, Any]]:
 
 
 def _find_pending(coral_dir: Path) -> list[Attempt]:
-    """Return pending attempts (across all islands in multi-island mode), oldest first."""
-    if (coral_dir / "islands").exists():
-        islands = sorted((coral_dir / "islands").iterdir())
-        attempt_dirs = [d / "attempts" for d in islands if d.is_dir()]
-    else:
-        attempt_dirs = [coral_dir / "public" / "attempts"]
-
+    """Return pending attempts oldest first."""
+    attempt_dirs = [coral_dir / "public" / "attempts"]
     pending: list[Attempt] = []
     for d in attempt_dirs:
         if not d.is_dir():
@@ -822,22 +1149,8 @@ def _safe_grade_one(
     except Exception:
         logger.exception("Unhandled error grading %s; marking crashed", attempt.commit_hash[:12])
         try:
-            grading_island_id = _attempt_island_id(attempt)
-            current_attempt, final_island_id = _current_attempt_location(
-                coral_dir,
-                attempt.commit_hash,
-                fallback_island_id=grading_island_id,
-            )
-            base_attempt = current_attempt or attempt
-            _move_eval_logs_to_current_island(
-                coral_dir,
-                attempt.commit_hash,
-                from_island_id=grading_island_id,
-                to_island_id=final_island_id,
-            )
+            base_attempt = attempt
             metadata = dict(base_attempt.metadata or {})
-            if final_island_id is not None:
-                metadata["island_id"] = final_island_id
             config = CoralConfig.from_yaml(coral_dir / "config.yaml")
             resource_env = (
                 resource_override.to_env() if resource_override is not None else _resource_env(config)
@@ -857,9 +1170,9 @@ def _safe_grade_one(
                 parent_shared_state_hash=base_attempt.parent_shared_state_hash,
                 metadata=metadata,
             )
-            write_attempt(str(coral_dir), crashed, island_id=final_island_id)
+            write_attempt(str(coral_dir), crashed)
             with _eval_count_lock:
-                increment_eval_count(coral_dir, island_id=final_island_id)
+                increment_eval_count(coral_dir)
             return crashed
         except Exception:
             logger.exception("Failed to record crash for %s", attempt.commit_hash[:12])
@@ -873,7 +1186,7 @@ def _drain_pending(
     config: CoralConfig,
     *,
     max_workers: int,
-    heartbeat_file: Path | None = None,
+    liveness_file: Path | None = None,
     should_stop: Callable[[], bool] = lambda: False,
 ) -> list[Attempt]:
     """Grade `pending` attempts via a worker pool of size `max_workers`.
@@ -899,7 +1212,7 @@ def _drain_pending(
             coral_dir,
             config,
             scheduler=scheduler,
-            heartbeat_file=heartbeat_file,
+            liveness_file=liveness_file,
             should_stop=should_stop,
         )
 
@@ -910,9 +1223,9 @@ def _drain_pending(
         }
         try:
             for fut in as_completed(futures):
-                if heartbeat_file is not None:
+                if liveness_file is not None:
                     try:
-                        heartbeat_file.write_text(datetime.now(UTC).isoformat())
+                        liveness_file.write_text(datetime.now(UTC).isoformat())
                     except OSError:
                         pass
                 result = fut.result()
@@ -937,7 +1250,7 @@ def _drain_pending_with_resource_scheduler(
     config: CoralConfig,
     *,
     scheduler: _ResourceScheduler,
-    heartbeat_file: Path | None = None,
+    liveness_file: Path | None = None,
     should_stop: Callable[[], bool] = lambda: False,
 ) -> list[Attempt]:
     """Drain pending attempts while respecting evaluator resource capacity."""
@@ -945,10 +1258,10 @@ def _drain_pending_with_resource_scheduler(
     queue = list(pending)
     running: dict[Any, tuple[Attempt, _ResourceLease]] = {}
 
-    def _heartbeat() -> None:
-        if heartbeat_file is not None:
+    def _write_liveness() -> None:
+        if liveness_file is not None:
             try:
-                heartbeat_file.write_text(datetime.now(UTC).isoformat())
+                liveness_file.write_text(datetime.now(UTC).isoformat())
             except OSError:
                 pass
 
@@ -957,7 +1270,9 @@ def _drain_pending_with_resource_scheduler(
         while queue and made_progress and not should_stop():
             made_progress = False
             for attempt in list(queue):
-                lease = scheduler.try_acquire()
+                lease = scheduler.try_acquire(
+                    _scheduler_job_resources_for_attempt(coral_dir, attempt, config)
+                )
                 if lease is None:
                     continue
                 if lease.oversubscribed:
@@ -991,7 +1306,7 @@ def _drain_pending_with_resource_scheduler(
                         finalized.append(result)
                 finally:
                     scheduler.release(lease)
-                    _heartbeat()
+                    _write_liveness()
             if should_stop():
                 for future in running:
                     future.cancel()
@@ -1056,8 +1371,8 @@ def run_daemon(coral_dir: str | Path, stop_event: Any = None) -> None:
         max_workers,
     )
     started_at = datetime.now(UTC).isoformat()
-    heartbeat_file = coral_dir / "public" / "grader_daemon_heartbeat"
-    heartbeat_file.write_text(started_at)
+    liveness_file = coral_dir / "public" / "grader_daemon_liveness"
+    liveness_file.write_text(started_at)
 
     def _should_stop() -> bool:
         return bool(stop_event and stop_event.is_set())
@@ -1073,18 +1388,18 @@ def run_daemon(coral_dir: str | Path, stop_event: Any = None) -> None:
             pending = []
 
         if not pending:
-            # Idle heartbeat so supervisors can tell the daemon is alive.
+            # Idle liveness update so supervisors can tell the daemon is alive.
             try:
-                heartbeat_file.write_text(datetime.now(UTC).isoformat())
+                liveness_file.write_text(datetime.now(UTC).isoformat())
             except OSError:
                 pass
             time.sleep(_POLL_INTERVAL_SEC)
             continue
 
-        wave = _select_pending_wave(pending, config, max_workers=max_workers)
+        wave = _select_pending_wave(pending, config, max_workers=max_workers, coral_dir=coral_dir)
         if not wave:
             try:
-                heartbeat_file.write_text(datetime.now(UTC).isoformat())
+                liveness_file.write_text(datetime.now(UTC).isoformat())
             except OSError:
                 pass
             time.sleep(_POLL_INTERVAL_SEC)
@@ -1096,7 +1411,7 @@ def run_daemon(coral_dir: str | Path, stop_event: Any = None) -> None:
             coral_dir,
             config,
             max_workers=max_workers,
-            heartbeat_file=heartbeat_file,
+            liveness_file=liveness_file,
             should_stop=_should_stop,
         )
 

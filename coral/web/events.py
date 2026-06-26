@@ -12,7 +12,6 @@ from typing import Any
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
-from coral.hub._island import all_view_roots
 from coral.hub.attempts import read_eval_count
 
 
@@ -55,41 +54,42 @@ class FileWatcher:
 
         # Attempts: count + latest mtime
         attempt_files: list[Path] = []
-        for view_root in all_view_roots(self.coral_dir):
-            attempts_dir = view_root / "attempts"
-            if attempts_dir.exists():
-                attempt_files.extend(attempts_dir.glob("*.json"))
+        attempts_dir = self.coral_dir / "public" / "attempts"
+        if attempts_dir.exists():
+            attempt_files.extend(attempts_dir.glob("*.json"))
         state["attempts_count"] = len(attempt_files)
         state["attempts_mtime"] = max((f.stat().st_mtime for f in attempt_files), default=0)
 
         # Notes: mtime
         note_files: list[Path] = []
-        for view_root in all_view_roots(self.coral_dir):
-            notes_dir = view_root / "notes"
-            if notes_dir.exists():
-                note_files.extend(notes_dir.rglob("*.md"))
+        notes_dir = self.coral_dir / "public" / "notes"
+        if notes_dir.exists():
+            note_files.extend(notes_dir.rglob("*.md"))
         state["notes_mtime"] = max((f.stat().st_mtime for f in note_files), default=0)
 
         # Logs: per-file sizes
         log_sizes: dict[str, int] = {}
         progress_mtimes: dict[str, float] = {}
-        is_multi = (self.coral_dir / "islands").exists()
-        for view_root in all_view_roots(self.coral_dir):
-            logs_dir = view_root / "logs"
-            if logs_dir.exists():
-                for lf in logs_dir.glob("*.log"):
-                    key = f"{view_root.name}/{lf.name}" if is_multi else lf.name
-                    log_sizes[key] = lf.stat().st_size
-            eval_logs_dir = view_root / "eval_logs"
-            if eval_logs_dir.exists():
-                for pf in eval_logs_dir.glob("*/progress.jsonl"):
-                    key = f"{view_root.name}/{pf.parent.name}" if is_multi else pf.parent.name
-                    progress_mtimes[key] = pf.stat().st_mtime
+        logs_dir = self.coral_dir / "public" / "logs"
+        if logs_dir.exists():
+            for lf in logs_dir.glob("*.log"):
+                log_sizes[lf.name] = lf.stat().st_size
+        eval_logs_dir = self.coral_dir / "public" / "eval_logs"
+        if eval_logs_dir.exists():
+            for pf in eval_logs_dir.glob("*/progress.jsonl"):
+                progress_mtimes[pf.parent.name] = pf.stat().st_mtime
         state["log_sizes"] = log_sizes
         state["progress_mtimes"] = progress_mtimes
 
         # Eval count
         state["eval_count"] = read_eval_count(self.coral_dir)
+
+        job_files: list[Path] = []
+        jobs_dir = self.coral_dir / "public" / "jobs"
+        if jobs_dir.exists():
+            job_files.extend(jobs_dir.glob("*/job.json"))
+        state["jobs_count"] = len(job_files)
+        state["jobs_mtime"] = max((f.stat().st_mtime for f in job_files), default=0)
 
         run_state = self.coral_dir / "public" / "run_state.json"
         state["run_state_mtime"] = run_state.stat().st_mtime if run_state.exists() else 0
@@ -164,6 +164,20 @@ class FileWatcher:
                     }
                 )
 
+            if (
+                new_state["jobs_count"] != self._state.get("jobs_count", 0)
+                or new_state["jobs_mtime"] > self._state.get("jobs_mtime", 0)
+            ):
+                self._broadcast(
+                    {
+                        "event": "job:update",
+                        "data": {
+                            "count": new_state["jobs_count"],
+                            "mtime": new_state["jobs_mtime"],
+                        },
+                    }
+                )
+
             if new_state["run_state_mtime"] > self._state.get("run_state_mtime", 0):
                 self._broadcast(
                     {
@@ -189,8 +203,8 @@ async def sse_endpoint(request: Request) -> StreamingResponse:
             # Send initial connected event
             yield f"event: connected\ndata: {json.dumps({'status': 'ok'})}\n\n"
 
-            heartbeat_interval = 15.0
-            last_heartbeat = time.time()
+            keepalive_interval = 15.0
+            last_keepalive = time.time()
 
             while True:
                 try:
@@ -199,11 +213,11 @@ async def sse_endpoint(request: Request) -> StreamingResponse:
                     data = json.dumps(event.get("data", {}))
                     yield f"event: {event_type}\ndata: {data}\n\n"
                 except TimeoutError:
-                    # Send heartbeat if enough time has passed
+                    # Send keepalive if enough time has passed
                     now = time.time()
-                    if now - last_heartbeat >= heartbeat_interval:
-                        yield f"event: heartbeat\ndata: {json.dumps({'time': now})}\n\n"
-                        last_heartbeat = now
+                    if now - last_keepalive >= keepalive_interval:
+                        yield f"event: keepalive\ndata: {json.dumps({'time': now})}\n\n"
+                        last_keepalive = now
 
                 # Check if client disconnected
                 if await request.is_disconnected():

@@ -8,13 +8,20 @@ from pathlib import Path
 
 import pytest
 
-from coral.config import AgentConfig, CoralConfig, GraderConfig, TaskConfig, WorkspaceConfig
+from coral.config import (
+    AgentConfig,
+    CoralConfig,
+    EvaluationConfig,
+    GraderConfig,
+    TaskConfig,
+    WorkspaceConfig,
+)
 from coral.workspace import (
     apply_runtime_mounts,
     create_project,
-    seed_agent_role,
     setup_codex_settings,
     setup_gitignore,
+    setup_instruction_links,
     setup_shared_state,
     setup_worktree_env,
     write_agent_id,
@@ -70,11 +77,12 @@ def test_create_project_structure():
         assert (paths.coral_dir / "public" / "attempts").is_dir()
         assert (paths.coral_dir / "public" / "logs").is_dir()
         assert (paths.coral_dir / "public" / "skills").is_dir()
-        assert (paths.coral_dir / "public" / "notes").is_dir()
         assert (paths.coral_dir / "public" / "knowledge").is_dir()
-        assert (paths.coral_dir / "public" / "notes").resolve() == (
-            paths.coral_dir / "public" / "knowledge" / "notes"
-        ).resolve()
+        assert (paths.coral_dir / "public" / "knowledge" / "practice" / "agents").is_dir()
+        assert (paths.coral_dir / "public" / "jobs").is_dir()
+        assert (paths.coral_dir / "public" / "datasets").is_dir()
+        assert not (paths.coral_dir / "public" / "roles").exists()
+        assert not (paths.coral_dir / "public" / "notes").exists()
         assert (paths.coral_dir / "private").is_dir()
         assert (paths.coral_dir / "config.yaml").is_file()
         assert paths.snapshots_dir.exists()
@@ -118,12 +126,12 @@ def test_create_project_snapshots_and_seeds_knowledge():
         _git_init(str(repo))
 
         (root / "task.yaml").write_text("task:\n  name: Test Task\n  description: d\n")
-        paper_dir = root / "knowledge" / "sources" / "papers" / "paper-a"
+        paper_dir = root / "knowledge" / "external" / "items" / "src-001"
         paper_dir.mkdir(parents=True)
-        (paper_dir / "text.md").write_text("# Paper A\n")
-        research_dir = root / "knowledge" / "notes" / "research"
-        research_dir.mkdir(parents=True)
-        (research_dir / "method-a.md").write_text("# Method A\n")
+        (paper_dir / "source.md").write_text("# Paper A\n")
+        (root / "knowledge" / "external" / "index.jsonl").write_text(
+            '{"id":"src-001","kind":"paper","title":"Paper A","status":"active","source":"https://example.com/a","item_path":"external/items/src-001"}\n'
+        )
 
         config = CoralConfig(
             task=TaskConfig(name="Test Task", description="Test task"),
@@ -135,12 +143,51 @@ def test_create_project_snapshots_and_seeds_knowledge():
         paths = create_project(config, config_dir=root)
 
         assert (paths.snapshots_dir / "task.yaml").read_text().startswith("task:")
-        assert (paths.snapshots_dir / "knowledge" / "sources" / "papers" / "paper-a" / "text.md").read_text() == "# Paper A\n"
-        assert (paths.coral_dir / "public" / "knowledge" / "sources" / "papers" / "paper-a" / "text.md").read_text() == "# Paper A\n"
-        assert (paths.coral_dir / "public" / "notes" / "research" / "method-a.md").read_text() == "# Method A\n"
-        assert (paths.coral_dir / "public" / "knowledge" / "capsules").is_dir()
-        assert (paths.coral_dir / "public" / "knowledge" / "maps" / "methods.md").is_file()
-        assert (paths.coral_dir / "public" / "knowledge" / "packs" / "global.md").is_file()
+        assert (paths.snapshots_dir / "knowledge" / "external" / "items" / "src-001" / "source.md").read_text() == "# Paper A\n"
+        assert (paths.coral_dir / "public" / "knowledge" / "external" / "items" / "src-001" / "source.md").read_text() == "# Paper A\n"
+        assert (paths.coral_dir / "public" / "knowledge" / "practice" / "agents").is_dir()
+        assert not (paths.coral_dir / "public" / "knowledge" / "capsules").exists()
+        assert not (paths.coral_dir / "public" / "knowledge" / "maps").exists()
+        assert not (paths.coral_dir / "public" / "knowledge" / "packs").exists()
+
+
+def test_l1_exposes_grader_assets_in_agent_repo():
+    """L1 tasks make the scoring mechanism visible in the run repo."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
+        root = Path(d)
+        repo = root / "repo"
+        _git_init(str(repo))
+        (root / "grader" / "src").mkdir(parents=True)
+        (root / "grader" / "src" / "visible_grader.py").write_text("# visible\n")
+
+        config = CoralConfig(
+            task=TaskConfig(name="Open Eval", description="d"),
+            evaluation=EvaluationConfig(level="L1"),
+            grader=GraderConfig(entrypoint="visible_grader:Grader"),
+            workspace=WorkspaceConfig(results_dir=str(root / "results"), repo_path=str(repo)),
+        )
+        paths = create_project(config, config_dir=root)
+
+        assert (paths.repo_dir / "grader" / "src" / "visible_grader.py").read_text() == "# visible\n"
+
+
+def test_l2_does_not_expose_grader_assets_in_agent_repo():
+    """L2 keeps grader package outside the agent-visible run repo by default."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
+        root = Path(d)
+        repo = root / "repo"
+        _git_init(str(repo))
+        (root / "grader" / "src").mkdir(parents=True)
+        (root / "grader" / "src" / "hidden_grader.py").write_text("# hidden\n")
+
+        config = CoralConfig(
+            task=TaskConfig(name="Hidden Eval", description="d"),
+            grader=GraderConfig(entrypoint="hidden_grader:Grader"),
+            workspace=WorkspaceConfig(results_dir=str(root / "results"), repo_path=str(repo)),
+        )
+        paths = create_project(config, config_dir=root)
+
+        assert not (paths.repo_dir / "grader").exists()
 
 
 def test_write_agent_id():
@@ -159,10 +206,13 @@ def test_setup_gitignore():
         gitignore = worktree / ".gitignore"
         assert gitignore.exists()
         content = gitignore.read_text()
+        assert ".coral/" in content
         assert ".coral_agent_id" in content
         assert "CLAUDE.md" in content
+        assert "CORAL_OVERVIEW.md" in content
+        assert "CORAL_LOOPS.md" in content
+        assert "CORAL_SHARED" in content
         assert ".claude/" in content
-        assert ".coral_island" in content
 
 
 def test_setup_gitignore_preserves_existing():
@@ -187,6 +237,7 @@ def test_setup_gitignore_idempotent():
 
         content = (worktree / ".gitignore").read_text()
         assert content.count(".claude/") == 1
+        assert content.count("CORAL_SHARED") == 1
 
 
 @pytest.mark.parametrize(
@@ -212,6 +263,10 @@ def test_setup_codex_settings_writes_top_level_web_search(
         config_toml = (worktree / ".codex" / "config.toml").read_text()
         config = tomllib.loads(config_toml)
         assert config["web_search"] == expected
+        assert config["sandbox_mode"] == "workspace-write"
+        assert "danger-full-access" not in config_toml
+        assert str(worktree.resolve()) in config["sandbox_workspace_write"]["writable_roots"]
+        assert str((coral_dir / "public").resolve()) in config["sandbox_workspace_write"]["writable_roots"]
         assert "tools" not in config
 
 
@@ -471,205 +526,60 @@ def test_apply_runtime_mounts_multiple_files():
         assert (worktree / ".claude" / "b.json").read_text() == "B"
 
 
-# --- seed_agent_role tests ---
-
-
-def _role_workspace(d: Path) -> tuple[Path, Path]:
-    """Create a coral_dir + base_dir under d; return both."""
-    coral_dir = d / ".coral"
-    coral_dir.mkdir()
-    base = d / "base"
-    base.mkdir()
-    return coral_dir, base
-
-
-def test_seed_agent_role_copies_file():
-    """A user-provided .md is copied to public/roles/<agent_id>.md."""
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
-        coral_dir, base = _role_workspace(Path(d))
-        (base / "integrator.md").write_text("# Integrator role\n")
-
-        dst = seed_agent_role(coral_dir, "agent-1", "integrator.md", base)
-
-        assert dst == coral_dir / "public" / "roles" / "agent-1.md"
-        assert dst.read_text() == "# Integrator role\n"
-
-
-def test_seed_agent_role_idempotent_preserves_existing():
-    """Existing role file is never overwritten — agent evolution is preserved."""
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
-        coral_dir, base = _role_workspace(Path(d))
-        (base / "seed.md").write_text("# seed")
-
-        # First seed
-        seed_agent_role(coral_dir, "agent-1", "seed.md", base)
-        # Simulate the agent evolving its own role
-        evolved = coral_dir / "public" / "roles" / "agent-1.md"
-        evolved.write_text("# evolved gen 3")
-
-        # Re-seed (e.g. on resume) must not clobber
-        seed_agent_role(coral_dir, "agent-1", "seed.md", base)
-
-        assert evolved.read_text() == "# evolved gen 3"
-
-
-def test_seed_agent_role_absolute_source():
-    """Absolute source paths are used as-is."""
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
-        coral_dir, base = _role_workspace(Path(d))
-        elsewhere = Path(d) / "elsewhere"
-        elsewhere.mkdir()
-        src = elsewhere / "skeptic.md"
-        src.write_text("# skeptic")
-
-        seed_agent_role(coral_dir, "agent-2", str(src), base)
-
-        assert (coral_dir / "public" / "roles" / "agent-2.md").read_text() == "# skeptic"
-
-
-def test_seed_agent_role_expands_tilde(monkeypatch):
-    """``~`` in source expands to $HOME, matching apply_runtime_mounts."""
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
-        coral_dir, base = _role_workspace(Path(d))
-        fake_home = Path(d) / "fake_home"
-        fake_home.mkdir()
-        (fake_home / "id.md").write_text("from-home")
-        monkeypatch.setenv("HOME", str(fake_home))
-
-        seed_agent_role(coral_dir, "agent-1", "~/id.md", base)
-
-        assert (coral_dir / "public" / "roles" / "agent-1.md").read_text() == "from-home"
-
-
-def test_seed_agent_role_missing_source_raises():
-    """A missing source surfaces as FileNotFoundError so misconfig fails loudly."""
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
-        coral_dir, base = _role_workspace(Path(d))
-        with pytest.raises(FileNotFoundError, match="role_file"):
-            seed_agent_role(coral_dir, "agent-1", "nope.md", base)
-
-
-def test_seed_agent_role_per_agent_distinct_content():
-    """Multiple agents can each be seeded from a different file."""
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
-        coral_dir, base = _role_workspace(Path(d))
-        (base / "a.md").write_text("A's role")
-        (base / "b.md").write_text("B's role")
-
-        seed_agent_role(coral_dir, "agent-1", "a.md", base)
-        seed_agent_role(coral_dir, "agent-2", "b.md", base)
-
-        ids = coral_dir / "public" / "roles"
-        assert (ids / "agent-1.md").read_text() == "A's role"
-        assert (ids / "agent-2.md").read_text() == "B's role"
-
-
-def test_seed_agent_role_default_template_when_no_source():
-    """source=None falls back to the bundled gen-0 role template."""
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
-        coral_dir, _ = _role_workspace(Path(d))
-
-        dst = seed_agent_role(coral_dir, "agent-1")
-
-        assert dst.exists()
-        body = dst.read_text()
-        # Bundled template renders the agent_id and frontmatter
-        assert "agent_id: agent-1" in body
-        assert "generation: 0" in body
-
-
-def test_seed_agent_role_relative_source_without_base_dir_raises():
-    """A relative source with no base_dir surfaces as ValueError, not silent cwd resolution."""
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
-        coral_dir, _ = _role_workspace(Path(d))
-        with pytest.raises(ValueError, match="base_dir is required"):
-            seed_agent_role(coral_dir, "agent-1", "relative.md")
-
-
-# --- setup_shared_state role-symlink tests ---
-
-
-def test_setup_shared_state_symlinks_roles():
-    """roles/ is symlinked into the worktree's shared dir."""
+def test_setup_shared_state_does_not_symlink_roles():
+    """The removed role mechanism is not exposed in agent worktrees."""
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         coral_dir = Path(d) / ".coral"
-        (coral_dir / "public" / "roles").mkdir(parents=True)
+        (coral_dir / "public").mkdir(parents=True)
         worktree = Path(d) / "worktree"
         worktree.mkdir()
 
         setup_shared_state(worktree, coral_dir, ".claude")
 
-        link = worktree / ".claude" / "roles"
-        assert link.is_symlink()
-        assert link.resolve() == (coral_dir / "public" / "roles").resolve()
+        assert not (worktree / ".claude" / "roles").exists()
+        assert not (worktree / ".claude" / "notes").exists()
+        assert not (coral_dir / "public" / "roles").exists()
+        assert not (coral_dir / "public" / "notes").exists()
+        assert (worktree / ".claude" / "jobs").is_symlink()
+        assert (worktree / ".claude" / "datasets").is_symlink()
+        assert (worktree / ".claude" / "control").is_symlink()
+        assert (coral_dir / "public" / "jobs").is_dir()
+        assert (coral_dir / "public" / "datasets").is_dir()
+        assert (coral_dir / "public" / "control").is_dir()
 
 
-def test_setup_shared_state_migrates_real_roles_dir():
-    """A previous run's real roles/ dir is migrated into shared, then symlinked."""
+def test_setup_instruction_links_exposes_reusable_manuals():
+    """Root-level manual links point into the shared knowledge manuals."""
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
-        coral_dir = Path(d) / ".coral"
-        (coral_dir / "public" / "roles").mkdir(parents=True)
-        worktree = Path(d) / "worktree"
-        (worktree / ".claude" / "roles").mkdir(parents=True)
-        # An agent wrote its role into a real local dir before the symlink
-        # behavior shipped — make sure we don't lose that file.
-        (worktree / ".claude" / "roles" / "agent-1.md").write_text("local content")
-
-        setup_shared_state(worktree, coral_dir, ".claude")
-
-        link = worktree / ".claude" / "roles"
-        assert link.is_symlink()
-        assert (coral_dir / "public" / "roles" / "agent-1.md").read_text() == "local content"
-
-
-def test_repoint_shared_state_swaps_island_targets():
-    """repoint_shared_state moves an agent's symlinks from src island to dst."""
-    from coral.workspace.worktree import repoint_shared_state
-
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
-        coral_dir = Path(d) / ".coral"
-        # Multi-island layout
-        (coral_dir / "islands" / "0" / "notes").mkdir(parents=True)
-        (coral_dir / "islands" / "1" / "notes").mkdir(parents=True)
         worktree = Path(d) / "worktree"
         worktree.mkdir()
 
-        # First wire to island 0, then repoint to island 1.
-        setup_shared_state(worktree, coral_dir, ".claude", island_id="0")
-        notes_link = worktree / ".claude" / "notes"
-        assert notes_link.resolve() == (coral_dir / "islands" / "0" / "notes").resolve()
+        setup_instruction_links(worktree, ".claude")
 
-        repoint_shared_state(worktree, coral_dir, ".claude", new_island_id="1")
-        # Symlink now points at island 1
-        assert notes_link.is_symlink()
-        assert notes_link.resolve() == (coral_dir / "islands" / "1" / "notes").resolve()
-        # Breadcrumb updated
-        assert (worktree / ".coral_island").read_text() == "1"
+        overview = worktree / "CORAL_OVERVIEW.md"
+        loops = worktree / "CORAL_LOOPS.md"
+        shared = worktree / "CORAL_SHARED"
+        assert overview.is_symlink()
+        assert loops.is_symlink()
+        assert shared.is_symlink()
+        assert os.readlink(overview) == ".claude/knowledge/manuals/coral-overview-cli.md"
+        assert os.readlink(loops) == ".claude/knowledge/manuals/agent-loops.md"
+        assert os.readlink(shared) == ".claude"
 
 
-def test_repoint_shared_state_creates_missing_dirs_on_destination():
-    """An empty destination island still gets a working set of symlinks."""
-    from coral.workspace.worktree import repoint_shared_state
-
+def test_setup_instruction_links_preserves_user_files():
+    """Unexpected real files with these names are not overwritten."""
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
-        coral_dir = Path(d) / ".coral"
-        (coral_dir / "islands" / "0" / "notes").mkdir(parents=True)
-        # Island 1 exists but is empty (no notes/, attempts/, etc. yet).
-        (coral_dir / "islands" / "1").mkdir()
         worktree = Path(d) / "worktree"
         worktree.mkdir()
+        existing = worktree / "CORAL_OVERVIEW.md"
+        existing.write_text("user-owned\n")
 
-        setup_shared_state(worktree, coral_dir, ".claude", island_id="0")
-        repoint_shared_state(worktree, coral_dir, ".claude", new_island_id="1")
+        setup_instruction_links(worktree, ".claude")
 
-        # The helper backfilled the missing subdirs on island 1.
-        assert (coral_dir / "islands" / "1" / "notes").is_dir()
-        assert (coral_dir / "islands" / "1" / "attempts").is_dir()
-        # And the symlinks resolve cleanly (do not dangle).
-        for item in ("notes", "attempts", "skills", "heartbeat"):
-            link = worktree / ".claude" / item
-            assert link.is_symlink()
-            assert link.resolve().is_dir()
+        assert not existing.is_symlink()
+        assert existing.read_text() == "user-owned\n"
+        assert (worktree / "CORAL_LOOPS.md").is_symlink()
 
 
 def test_create_project_seeds_user_skills():

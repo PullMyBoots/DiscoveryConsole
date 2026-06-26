@@ -28,7 +28,7 @@ This project is for researchers who already use coding agents heavily and want a
 DiscoveryConsole combines three pieces into one workflow:
 
 - **A research control console** for launching, pausing, resuming, and inspecting multi-agent runs.
-- **A Codex skill workflow** that teaches Codex how to prepare knowledge, evals, baselines, and agent/island plans before launch.
+- **A Codex skill workflow** that teaches Codex how to prepare knowledge, evals, baselines, and agent route plans before launch.
 - **A CORAL-based execution engine** that runs isolated coding agents, evaluates commits, shares state, and records attempts.
 
 The intended loop is:
@@ -110,8 +110,21 @@ In the intended workflow, Codex prepares the task more fully before launch:
 - `knowledge/` sources, notes, and eval specification;
 - packaged grader and eval profiles;
 - baseline attempt records;
-- agent seed briefs and island themes;
+- runnable agent initialization bundles: route plans and first-eval scripts;
 - resource and runtime configuration.
+
+Then Codex materializes the run without launching agents:
+
+```bash
+coral prepare -c task.yaml
+coral validate --run-dir results/<task>/<timestamp>/.coral
+```
+
+After readiness passes, launch the prepared timestamp:
+
+```bash
+coral start -c results/<task>/<timestamp>/.coral/config.yaml
+```
 
 ### 4. Open the dashboard
 
@@ -135,15 +148,16 @@ CORAL execution engine
   ├─ grader daemon and eval queue
   ├─ timestamped run directories
   ├─ public knowledge and attempts
-  └─ optional multi-island search with migration
+  └─ shared public knowledge and attempts
 ```
 
 Important concepts:
 
 - **Timestamped runs**: every launch creates a frozen experiment site.
+- **Prepare/start split**: `coral prepare` creates the timestamp, repo clone, shared state, and agent worktrees; `coral start` only launches a prepared timestamp.
 - **Knowledge base**: startup sources and runtime notes live under `.coral/public/knowledge/`.
 - **Eval profiles**: quick/medium/full/stress profiles let you separate iteration speed from final evidence.
-- **Agent briefs**: Codex prepares differentiated starting routes instead of letting every agent begin identically.
+- **Agent initialization bundles**: Codex prepares differentiated runnable starting routes plus first-eval scripts instead of letting every agent begin identically.
 - **Human feedback**: paused runs can receive a next-resume instruction that all agents hear on resume.
 - **Review**: scores, baselines, eval versions, guardrails, and possible cheating are reviewed together.
 
@@ -169,7 +183,7 @@ It includes scripts for:
 - preparing a knowledge skeleton;
 - writing eval progress;
 - recording baseline attempts;
-- generating agent and island briefs.
+- generating agent route briefs.
 
 See [codex-skill/README.md](codex-skill/README.md).
 
@@ -177,7 +191,7 @@ See [codex-skill/README.md](codex-skill/README.md).
 
 DiscoveryConsole is built on top of [CORAL](https://github.com/Human-Agent-Society/CORAL), an Apache-2.0 open-source project for autonomous multi-agent coding and self-evolution.
 
-This repository contains a modified CORAL engine plus a Codex-native research console and skill workflow. The original CORAL paper and project remain the foundation of the execution model: isolated agent worktrees, shared state, grader daemon, heartbeats, and multi-agent evolution.
+This repository contains a modified CORAL engine plus a Codex-native research console and skill workflow. The original CORAL paper and project remain the foundation of the execution model: isolated agent worktrees, shared state, grader daemon, eval queueing, and multi-agent evolution.
 
 If you use this project in research, cite CORAL as the underlying engine:
 

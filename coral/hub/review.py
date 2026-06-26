@@ -8,8 +8,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from coral.hub._island import all_view_roots
-from coral.hub.attempts import _read_all_island_attempts
 from coral.hub.knowledge import list_knowledge_sources
 from coral.hub.notes import list_notes
 from coral.types import (
@@ -94,12 +92,7 @@ def build_review_summary(
         "knowledge": {
             "sources": len(sources),
             "notes": len(notes),
-            "proposed_sources": int(source_status_counts.get("proposed", 0)),
-            "inbox_sources": sum(
-                1
-                for source in sources
-                if str(source.get("relative_path") or "").startswith("inbox/")
-            ),
+            "proposed_sources": 0,
             "sources_by_category": dict(
                 Counter(str(source.get("category") or "other") for source in sources)
             ),
@@ -218,7 +211,6 @@ def _read_review_attempts(coral_dir: Path) -> list[Attempt]:
             attempts.append(Attempt.from_dict(json.loads(path.read_text())))
         except (OSError, json.JSONDecodeError, KeyError):
             continue
-    attempts.extend(_read_all_island_attempts(coral_dir))
 
     seen: set[str] = set()
     deduped: list[Attempt] = []
@@ -231,10 +223,8 @@ def _read_review_attempts(coral_dir: Path) -> list[Attempt]:
 
 
 def _find_eval_spec(coral_dir: Path) -> Path | None:
-    candidates = [coral_dir / "public" / "knowledge" / "eval_spec.md"]
-    for view_root in all_view_roots(coral_dir):
-        candidates.append(view_root / "knowledge" / "eval_spec.md")
-    return next((path for path in candidates if path.exists()), None)
+    path = coral_dir / "public" / "knowledge" / "eval_spec.md"
+    return path if path.exists() else None
 
 
 def _latest_attempt_timestamp(attempts: list[Attempt]) -> datetime | None:
@@ -355,20 +345,11 @@ def _review_flags(summary: dict[str, Any]) -> list[dict[str, str]]:
                 "detail": "No papers, repos, docs, or proposed references are indexed for this run.",
             }
         )
-    if knowledge["proposed_sources"] > 0:
-        flags.append(
-            {
-                "severity": "low",
-                "label": "Proposed sources to process",
-                "detail": f"{knowledge['proposed_sources']} proposed source(s) should be promoted or rejected.",
-            }
-        )
     return flags
 
 
 def _recommended_actions(summary: dict[str, Any]) -> list[str]:
     attempts = summary["attempts"]
-    knowledge = summary["knowledge"]
     eval_spec = summary.get("eval_spec") if isinstance(summary.get("eval_spec"), dict) else {}
     actions: list[str] = []
     if attempts["best"]:
@@ -377,8 +358,6 @@ def _recommended_actions(summary: dict[str, Any]) -> list[str]:
         actions.append("Separate agent-code failures from grader/environment failures before trusting scores.")
     if attempts["improvement_over_baseline"] is not None:
         actions.append("Record whether the best result beats the baseline under the frozen eval profile.")
-    if knowledge["proposed_sources"] or knowledge["inbox_sources"]:
-        actions.append("Promote useful proposed/inbox sources into the task knowledge base before the next timestamp.")
     if eval_spec.get("modified_after_attempts"):
         actions.append("Start a new timestamp with a bumped eval_version or re-run selected attempts under the revised eval spec.")
     if not actions:

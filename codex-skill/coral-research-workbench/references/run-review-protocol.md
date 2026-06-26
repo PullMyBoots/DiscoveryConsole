@@ -33,14 +33,11 @@ Ask:
 
 ## Knowledge Promotion
 
-Classify new sources:
+Classify external sources as active or archived. Keep useful references active
+with `coral kb add external`; archive stale references with `coral kb remove`.
 
-- `accepted`: useful and should move into the next task-level knowledge snapshot.
-- `proposed`: captured but not reviewed.
-- `rejected`: not useful for this task.
-- `archived`: kept for provenance but not active guidance.
-
-Durable conclusions should become notes under `knowledge/notes/<category>/`. Raw downloads stay in `inbox/` until reviewed.
+Durable conclusions should become practice knowledge through `coral kb note` or
+`coral kb archive --attempt <hash>`.
 
 ## Resume Instructions
 
@@ -59,6 +56,18 @@ Good resume instructions are concise and operational:
 - what guardrail to protect.
 
 Do not use resume instructions to hide an eval change. If the scoring meaning changes, fork.
+
+## Targeted Adjustments
+
+Use the smallest adjustment that matches the user's feedback:
+
+- Run-level steering: write `.coral/public/control/next_instruction.md`.
+- Agent-level critique: reset that agent's notebook with
+  `coral kb notebook --agent <agent-id> --set <file> --reason external-adjustment --by codex`.
+- External knowledge changes: use `coral kb add external ...` or
+  `coral kb remove <src-id>`.
+- Eval meaning changes, major route rewrites, or baseline changes: fork a new
+  timestamp instead of mutating the current evidence.
 
 ## Forking a New Timestamp
 

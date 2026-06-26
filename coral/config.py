@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,39 @@ class TaskConfig:
     name: str = MISSING
     description: str = MISSING
     tips: str = ""
+
+
+@dataclass
+class EvaluationConfig:
+    """Task-level evaluation topology.
+
+    The level is selected once for the task by the human/Codex task-design
+    discussion. CORAL then derives the legal spaces from it:
+
+    - L1: A only. Agents may inspect the data and scoring mechanism; A scores rank.
+    - L2: A + B. A is open exploration; B is hidden iterative scoring.
+    - L3: A + B + C. B is hidden iterative scoring; C is sealed final scoring
+      kept outside the default agent loop.
+    """
+
+    level: str = "L2"
+    allow_loop_final: bool = False
+
+    def __post_init__(self) -> None:
+        self.level = str(self.level).upper()
+        if self.level not in {"L1", "L2", "L3"}:
+            raise ValueError(
+                f"evaluation.level must be one of L1, L2, L3, got {self.level!r}"
+            )
+
+    def score_space(self, *, final: bool = False) -> str:
+        if final:
+            if self.level != "L3":
+                raise ValueError("final evaluation is only valid when evaluation.level is L3")
+            return "C"
+        if self.level == "L1":
+            return "A"
+        return "B"
 
 
 @dataclass
@@ -49,6 +83,7 @@ class ResourceConfig:
 
     cpu_cores: int = 0  # 0 = unspecified
     memory_gb: float = 0.0  # 0 = unspecified
+    storage_gb: float = 0.0  # 0 = unspecified
     gpu_count: int = 0  # 0 = no/unspecified GPU budget
     gpu_ids: list[str] = field(default_factory=list)
 
@@ -57,12 +92,14 @@ class ResourceConfig:
             raise ValueError(f"resources.cpu_cores must be >= 0, got {self.cpu_cores}")
         if self.memory_gb < 0:
             raise ValueError(f"resources.memory_gb must be >= 0, got {self.memory_gb}")
+        if self.storage_gb < 0:
+            raise ValueError(f"resources.storage_gb must be >= 0, got {self.storage_gb}")
         if self.gpu_count < 0:
             raise ValueError(f"resources.gpu_count must be >= 0, got {self.gpu_count}")
         self.gpu_ids = [str(gpu_id) for gpu_id in self.gpu_ids]
 
     def active(self) -> bool:
-        return bool(self.cpu_cores or self.memory_gb or self.gpu_count or self.gpu_ids)
+        return bool(self.cpu_cores or self.memory_gb or self.storage_gb or self.gpu_count or self.gpu_ids)
 
     def to_env(self) -> dict[str, str]:
         env: dict[str, str] = {}
@@ -70,6 +107,8 @@ class ResourceConfig:
             env["CORAL_CPU_CORES"] = str(self.cpu_cores)
         if self.memory_gb > 0:
             env["CORAL_MEMORY_GB"] = f"{self.memory_gb:g}"
+        if self.storage_gb > 0:
+            env["CORAL_STORAGE_GB"] = f"{self.storage_gb:g}"
         if self.gpu_count > 0:
             env["CORAL_GPU_COUNT"] = str(self.gpu_count)
         if self.gpu_ids:
@@ -77,6 +116,111 @@ class ResourceConfig:
             env["CORAL_GPU_IDS"] = joined
             env["CUDA_VISIBLE_DEVICES"] = joined
         return env
+
+
+@dataclass
+class ComputeProfileConfig:
+    """Resource and timeout profile for open A-space compute jobs."""
+
+    cpu_cores: int = 1
+    memory_gb: float = 0.0
+    gpu_count: int = 0
+    gpu_ids: list[str] = field(default_factory=list)
+    timeout: int = 600
+    env: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.timeout < 0:
+            raise ValueError(f"compute.profiles[].timeout must be >= 0, got {self.timeout}")
+        self.gpu_ids = [str(gpu_id) for gpu_id in self.gpu_ids]
+        # Reuse ResourceConfig validation.
+        self.resources()
+
+    def resources(self) -> ResourceConfig:
+        return ResourceConfig(
+            cpu_cores=self.cpu_cores,
+            memory_gb=self.memory_gb,
+            gpu_count=self.gpu_count,
+            gpu_ids=list(self.gpu_ids),
+        )
+
+
+@dataclass
+class ComputeClassConfig:
+    """Policy for a class of compute jobs."""
+
+    default_profile: str = "cpu-small"
+    allow_private_data: bool = False
+    network: bool = False
+    max_running_per_agent: int = 1
+    max_jobs_per_work_loop: int = 0  # 0 = unlimited until loop accounting exists
+    max_gpu_minutes_per_work_loop: int = 0  # 0 = unlimited until loop accounting exists
+
+    def __post_init__(self) -> None:
+        if self.max_running_per_agent < 1:
+            raise ValueError(
+                "compute.classes[].max_running_per_agent must be >= 1, "
+                f"got {self.max_running_per_agent}"
+            )
+        if self.max_jobs_per_work_loop < 0:
+            raise ValueError(
+                "compute.classes[].max_jobs_per_work_loop must be >= 0, "
+                f"got {self.max_jobs_per_work_loop}"
+            )
+        if self.max_gpu_minutes_per_work_loop < 0:
+            raise ValueError(
+                "compute.classes[].max_gpu_minutes_per_work_loop must be >= 0, "
+                f"got {self.max_gpu_minutes_per_work_loop}"
+            )
+
+
+def _default_compute_profiles() -> dict[str, ComputeProfileConfig]:
+    return {
+        "cpu-small": ComputeProfileConfig(cpu_cores=2, memory_gb=8, timeout=600),
+        "cpu-large": ComputeProfileConfig(cpu_cores=8, memory_gb=32, timeout=1800),
+        "gpu-small": ComputeProfileConfig(cpu_cores=4, memory_gb=24, gpu_count=1, timeout=1800),
+        "gpu-large": ComputeProfileConfig(cpu_cores=8, memory_gb=64, gpu_count=1, timeout=7200),
+    }
+
+
+@dataclass
+class ComputeConfig:
+    """Open A-space compute runner configuration.
+
+    This is intentionally a small CORAL-level contract. The default backend is
+    a local subprocess runner; Docker/Slurm/Nomad can be added behind the same
+    `coral run` job schema later.
+    """
+
+    backend: str = "local"
+    allow_unisolated_local: bool = False
+    pool: ResourceConfig = field(default_factory=ResourceConfig)
+    profiles: dict[str, ComputeProfileConfig] = field(default_factory=_default_compute_profiles)
+    classes: dict[str, ComputeClassConfig] = field(
+        default_factory=lambda: {"explore": ComputeClassConfig()}
+    )
+
+    def __post_init__(self) -> None:
+        if isinstance(self.pool, dict):
+            self.pool = ResourceConfig(**self.pool)
+        self.profiles = {
+            name: profile
+            if isinstance(profile, ComputeProfileConfig)
+            else ComputeProfileConfig(**profile)
+            for name, profile in self.profiles.items()
+        }
+        self.classes = {
+            name: cls if isinstance(cls, ComputeClassConfig) else ComputeClassConfig(**cls)
+            for name, cls in self.classes.items()
+        }
+        if self.backend != "local":
+            raise ValueError(f"compute.backend currently supports only 'local', got {self.backend!r}")
+        for class_name, cls in self.classes.items():
+            if cls.default_profile not in self.profiles:
+                raise ValueError(
+                    f"compute.classes.{class_name}.default_profile "
+                    f"{cls.default_profile!r} is not defined in compute.profiles"
+                )
 
 
 @dataclass
@@ -93,6 +237,38 @@ class GraderProfileConfig:
             raise ValueError(f"grader.profiles[].timeout must be >= 0, got {self.timeout}")
         if isinstance(self.resources, dict):
             self.resources = ResourceConfig(**self.resources)
+
+
+@dataclass
+class FinalGraderConfig:
+    """Optional sealed C-space grader for L3 tasks.
+
+    The final grader reuses the main grader venv/setup. It can point at a
+    different entrypoint and private assets, with lightweight overrides for
+    timeout/profile/args/resources.
+    """
+
+    entrypoint: str = ""
+    timeout: int = 0  # 0 = inherit grader.timeout
+    args: dict[str, Any] = field(default_factory=dict)
+    private: list[str] = field(default_factory=list)
+    direction: str = ""  # empty = inherit grader.direction
+    eval_version: str = ""  # empty = derive from grader.eval_version
+    profile: str = ""  # empty = inherit grader.profile
+    profiles: dict[str, GraderProfileConfig] = field(default_factory=dict)
+    resources: ResourceConfig = field(default_factory=ResourceConfig)
+
+    def __post_init__(self) -> None:
+        if self.timeout < 0:
+            raise ValueError(f"grader.final.timeout must be >= 0, got {self.timeout}")
+        if isinstance(self.resources, dict):
+            self.resources = ResourceConfig(**self.resources)
+        self.profiles = {
+            name: profile
+            if isinstance(profile, GraderProfileConfig)
+            else GraderProfileConfig(**profile)
+            for name, profile in self.profiles.items()
+        }
 
 
 @dataclass
@@ -121,6 +297,7 @@ class GraderConfig:
     # is graded, which prevents runaway pending floods when the grader is slow.
     max_pending_per_agent: int = 1
     parallel: ParallelGraderConfig = field(default_factory=ParallelGraderConfig)
+    final: FinalGraderConfig = field(default_factory=FinalGraderConfig)
 
     def __post_init__(self) -> None:
         if self.max_pending_per_agent < 0:
@@ -135,6 +312,8 @@ class GraderConfig:
             self.parallel = ParallelGraderConfig(**self.parallel)
         if isinstance(self.resources, dict):
             self.resources = ResourceConfig(**self.resources)
+        if isinstance(self.final, dict):
+            self.final = FinalGraderConfig(**self.final)
         self.profiles = {
             name: profile
             if isinstance(profile, GraderProfileConfig)
@@ -150,26 +329,30 @@ class GraderConfig:
         if not self.profile:
             raise ValueError("grader.profile must be non-empty")
 
+    def for_space(self, eval_space: str) -> GraderConfig:
+        """Return the effective grader config for an evaluation space."""
+        if eval_space != "C":
+            return self
 
-@dataclass
-class HeartbeatActionConfig:
-    """Configuration for a single heartbeat action.
-
-    Trigger-specific knobs (e.g. ``epsilon`` for plateau) go under
-    ``options``. The schema is validated at runtime against the trigger; see
-    :class:`coral.agent.heartbeat.PlateauOptions`.
-    """
-
-    name: str = MISSING  # e.g. "reflect", "consolidate", "pivot"
-    every: int = MISSING  # trigger every N evals (interval) or stall threshold (plateau)
-    is_global: bool = False  # True = use global eval count, False = per-agent
-    trigger: str = "interval"  # "interval" or "plateau"
-    prompt: str = ""  # custom prompt; if empty, falls back to built-in DEFAULT_PROMPTS
-    # Trigger-specific options. For ``trigger="plateau"`` the recognized key
-    # is ``epsilon`` (minimum delta over the prior plateau-anchor that counts
-    # as improvement; default 0.0 = legacy strict-> behavior). Unknown keys
-    # raise at load time.
-    options: dict[str, Any] = field(default_factory=dict)
+        final = self.final
+        if not final.entrypoint:
+            raise ValueError("L3 final evaluation requires grader.final.entrypoint")
+        final_args = dict(self.args)
+        final_args.update(final.args)
+        return GraderConfig(
+            entrypoint=final.entrypoint,
+            setup=list(self.setup),
+            timeout=final.timeout or self.timeout,
+            args=final_args,
+            private=list(self.private) + list(final.private),
+            direction=final.direction or self.direction,
+            eval_version=final.eval_version or f"{self.eval_version}_final",
+            profile=final.profile or self.profile,
+            profiles=final.profiles or dict(self.profiles),
+            resources=final.resources if final.resources.active() else self.resources,
+            max_pending_per_agent=self.max_pending_per_agent,
+            parallel=self.parallel,
+        )
 
 
 @dataclass
@@ -180,13 +363,6 @@ class GatewayConfig:
     port: int = 4000
     config: str = ""  # path to litellm_config.yaml
     api_key: str = ""  # LiteLLM master key (auto-generated if empty)
-
-
-@dataclass
-class WarmStartConfig:
-    """Warm-start configuration: optional research phase before the main coding loop."""
-
-    enabled: bool = False
 
 
 @dataclass
@@ -221,7 +397,6 @@ class AgentConfig:
     runtime: str = "claude_code"
     model: str = "sonnet"
     gateway: GatewayConfig = field(default_factory=GatewayConfig)
-    warmstart: WarmStartConfig = field(default_factory=WarmStartConfig)
     runtime_options: dict[str, Any] = field(default_factory=dict)
     # Mix-and-match: when non-empty, each entry spawns its own runtime/model
     # combo. ``agents.count`` is ignored (total = sum of assignment counts).
@@ -236,14 +411,6 @@ class AgentConfig:
     # faster than the prior 3600s while still being well above legitimate quiet
     # periods (long tool calls, grader queue waits — the latter is exempted).
     timeout: int = 1200
-    heartbeat: list[HeartbeatActionConfig] = field(
-        default_factory=lambda: [
-            HeartbeatActionConfig(name="reflect", every=1),
-            HeartbeatActionConfig(name="consolidate", every=10, is_global=True),
-            HeartbeatActionConfig(name="pivot", every=5, trigger="plateau"),
-            HeartbeatActionConfig(name="lint_wiki", every=10, is_global=True),
-        ]
-    )
     skills: list[str] = field(default_factory=list)  # skill dirs copied to .coral/public/skills/
     research: bool = True  # enable web search / literature review step in workflow
     stagger_seconds: int = 0  # delay between spawning each agent (rate-limit backpressure)
@@ -292,21 +459,27 @@ class AgentConfig:
                 f"(got pause={self.restart_pause_seconds}, window={self.restart_burst_window})"
             )
 
-    def heartbeat_interval(self, name: str) -> int:
-        """Get the interval for a heartbeat action by name."""
-        for action in self.heartbeat:
-            if action.name == name:
-                return action.every
-        raise KeyError(f"No heartbeat action named {name!r}")
-
-
 @dataclass
 class SharingConfig:
-    """What shared state is enabled."""
+    """Deprecated true-only compatibility shim for old task.yaml files."""
 
     attempts: bool = True
     notes: bool = True
     skills: bool = True
+
+    def __post_init__(self) -> None:
+        disabled = [
+            name
+            for name in ("attempts", "notes", "skills")
+            if getattr(self, name) is not True
+        ]
+        if disabled:
+            names = ", ".join(f"sharing.{name}" for name in disabled)
+            raise ValueError(
+                "sharing.* toggles have been removed. CORAL now exposes one fixed "
+                "public shared state model through the runtime shared directory and "
+                f"the `coral kb` CLI. Remove {names} from task.yaml."
+            )
 
 
 @dataclass
@@ -357,76 +530,28 @@ class RunConfig:
 
 
 @dataclass
-class MigrationConfig:
-    """Agent migration between islands.
-
-    Ignored in single-island mode (``islands.count == 1``).
-    """
-
-    enabled: bool = True
-    every: int = 50  # global evals between migration cycles
-    rank_window: int = 20  # "best agent" judged by max-over-last-N evals
-    min_evals: int = 3  # candidate must have >= N attempts to be eligible
-    dest_weighting: str = "score"  # score | uniform | round_robin
-    max_per_cycle: int = 2
-    notify_island: bool = True
-
-    def __post_init__(self) -> None:
-        if self.every < 1:
-            raise ValueError(f"islands.migration.every must be >= 1, got {self.every}")
-        if self.rank_window < 1:
-            raise ValueError(f"islands.migration.rank_window must be >= 1, got {self.rank_window}")
-        if self.rank_window > self.every:
-            raise ValueError(
-                f"islands.migration.rank_window ({self.rank_window}) must be "
-                f"<= islands.migration.every ({self.every})"
-            )
-        if self.min_evals < 1:
-            raise ValueError(f"islands.migration.min_evals must be >= 1, got {self.min_evals}")
-        if self.dest_weighting not in {"score", "uniform", "round_robin"}:
-            raise ValueError(
-                "islands.migration.dest_weighting must be one of "
-                f"{{score, uniform, round_robin}}, got {self.dest_weighting!r}"
-            )
-        if self.max_per_cycle < 1:
-            raise ValueError(
-                f"islands.migration.max_per_cycle must be >= 1, got {self.max_per_cycle}"
-            )
-
-
-@dataclass
-class IslandsConfig:
-    """Multi-island shared-state partitioning.
-
-    ``count = 1`` (the default) preserves today's single-island layout exactly
-    — no ``.coral/islands/`` directory is created and no migration code paths
-    are exercised.
-    """
-
-    count: int = 1
-    migration: MigrationConfig = field(default_factory=MigrationConfig)
-
-    def __post_init__(self) -> None:
-        if self.count < 1:
-            raise ValueError(f"islands.count must be >= 1, got {self.count}")
-        # OmegaConf round-trip can leave migration as a dict
-        if isinstance(self.migration, dict):
-            self.migration = MigrationConfig(**self.migration)
-
-
-@dataclass
 class CoralConfig:
     """Top-level project configuration."""
 
     task: TaskConfig = field(default_factory=TaskConfig)
+    evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     grader: GraderConfig = field(default_factory=GraderConfig)
+    compute: ComputeConfig = field(default_factory=ComputeConfig)
     agents: AgentConfig = field(default_factory=AgentConfig)
-    islands: IslandsConfig = field(default_factory=IslandsConfig)
     sharing: SharingConfig = field(default_factory=SharingConfig)
     knowledge: KnowledgeConfig = field(default_factory=KnowledgeConfig)
     workspace: WorkspaceConfig = field(default_factory=WorkspaceConfig)
     run: RunConfig = field(default_factory=RunConfig)
     task_dir: Path | None = None  # internal: directory containing task.yaml
+
+    def __post_init__(self) -> None:
+        if isinstance(self.evaluation, dict):
+            self.evaluation = EvaluationConfig(**self.evaluation)
+        if isinstance(self.grader, dict):
+            self.grader = GraderConfig(**self.grader)
+        if isinstance(self.compute, dict):
+            self.compute = ComputeConfig(**self.compute)
+        _validate_evaluation_topology(self.evaluation, self.grader)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> CoralConfig:
@@ -441,6 +566,7 @@ class CoralConfig:
         raw = OmegaConf.create(data)
         merged = OmegaConf.merge(schema, raw)
         cfg: CoralConfig = OmegaConf.to_object(merged)  # type: ignore[assignment]
+        _validate_evaluation_topology(cfg.evaluation, cfg.grader)
         return cfg
 
     def to_dict(self) -> dict[str, Any]:
@@ -448,9 +574,6 @@ class CoralConfig:
         container: dict[str, Any] = OmegaConf.to_container(sc, resolve=True)  # type: ignore[assignment]
         # Remove internal-only fields
         container.pop("task_dir", None)
-        # Serialize heartbeat is_global as "global" for YAML compat
-        for h in container.get("agents", {}).get("heartbeat", []):
-            h["global"] = h.pop("is_global", False)
         return container
 
     def to_yaml(self, path: str | Path) -> None:
@@ -462,6 +585,11 @@ class CoralConfig:
         """Merge CLI dotlist overrides into an existing config."""
         if not dotlist:
             return config
+        keys = [item.split("=", 1)[0] for item in dotlist]
+        _reject_removed_topology_keys(keys)
+        _reject_removed_agent_loop_keys(
+            key.removeprefix("agents.") for key in keys if key.startswith("agents.")
+        )
         base = OmegaConf.structured(config)
         overrides = OmegaConf.from_dotlist(dotlist)
         merged = OmegaConf.merge(base, overrides)
@@ -470,8 +598,10 @@ class CoralConfig:
 
 
 def _preprocess(data: dict[str, Any]) -> dict[str, Any]:
-    """Transform legacy keys and normalize heartbeat config before OmegaConf merge."""
-    # Reject removed grader.type / grader.module fields with migration guidance.
+    """Transform legacy keys before OmegaConf merge."""
+    _reject_removed_topology_keys(data.keys())
+
+    # Reject removed grader.type / grader.module fields with upgrade guidance.
     grader_data = data.get("grader")
     if isinstance(grader_data, dict):
         legacy_grader_keys = [k for k in ("type", "module") if k in grader_data]
@@ -489,45 +619,7 @@ def _preprocess(data: dict[str, Any]) -> dict[str, Any]:
     # Make a copy so we don't mutate the original
     agents_data = dict(agents_data)
 
-    heartbeat_raw = agents_data.pop("heartbeat", None)
-    old_reflect = agents_data.pop("reflect_every", None)
-    old_heartbeat = agents_data.pop("heartbeat_every", None)
-
-    if heartbeat_raw is not None:
-        specified = {h["name"] for h in heartbeat_raw}
-        for dflt in AgentConfig().heartbeat:
-            if dflt.name not in specified:
-                heartbeat_raw.append(
-                    {
-                        "name": dflt.name,
-                        "every": dflt.every,
-                        "global": dflt.is_global,
-                        "trigger": dflt.trigger,
-                    }
-                )
-        agents_data["heartbeat"] = [
-            {
-                "name": h["name"],
-                "every": h["every"],
-                "is_global": h.get("global", False),
-                "trigger": h.get("trigger", "interval"),
-                "prompt": h.get("prompt", ""),
-            }
-            for h in heartbeat_raw
-        ]
-    elif old_reflect is not None or old_heartbeat is not None:
-        agents_data["heartbeat"] = [
-            {
-                "name": "reflect",
-                "every": old_reflect if old_reflect is not None else 1,
-                "is_global": False,
-            },
-            {
-                "name": "consolidate",
-                "every": old_heartbeat if old_heartbeat is not None else 10,
-                "is_global": False,
-            },
-        ]
+    _reject_removed_agent_loop_keys(agents_data.keys())
 
     # If runtime is set but model is not, use the runtime-specific default.
     # Custom-entrypoint runtimes ('module.path:ClassName') have no default —
@@ -571,3 +663,55 @@ def _preprocess(data: dict[str, Any]) -> dict[str, Any]:
     data.pop("task_dir", None)
 
     return data
+
+
+def _validate_evaluation_topology(evaluation: EvaluationConfig, grader: GraderConfig) -> None:
+    """Validate the fixed L1/L2/L3 space topology against grader config."""
+    level = evaluation.level
+    has_final = bool(
+        grader.final.entrypoint
+        or grader.final.private
+        or grader.final.args
+        or grader.final.eval_version
+        or grader.final.profile
+        or grader.final.profiles
+        or grader.final.resources.active()
+        or grader.final.timeout
+    )
+    if level == "L1":
+        if grader.private:
+            raise ValueError(
+                "evaluation.level=L1 means A-space scoring is fully open; "
+                "do not configure grader.private hidden scoring assets."
+            )
+        if has_final:
+            raise ValueError("evaluation.level=L1 cannot configure grader.final")
+    elif level == "L2":
+        if has_final:
+            raise ValueError("evaluation.level=L2 cannot configure grader.final; use L3 for C-space")
+    elif level == "L3" and not grader.final.entrypoint:
+        raise ValueError("evaluation.level=L3 requires grader.final.entrypoint for sealed C-space")
+
+
+def _reject_removed_topology_keys(keys: Iterable[str]) -> None:
+    for key in keys:
+        if key == "islands" or key.startswith("islands."):
+            raise ValueError(
+                "The removed topology section is no longer supported. CORAL now runs "
+                "multiple agent routes in one shared .coral/public state space. "
+                "Remove that section and use agents.count or agents.assignments "
+                "to control parallel agents."
+            )
+
+
+def _reject_removed_agent_loop_keys(keys: Iterable[str]) -> None:
+    removed = {"heartbeat", "reflect_every", "heartbeat_every"}
+    found = [key for key in keys if key in removed]
+    if found:
+        raise ValueError(
+            "Removed agent loop key(s): "
+            + ", ".join(f"agents.{key}" for key in found)
+            + ". CORAL no longer supports interval/plateau heartbeat actions. "
+            "Use eval feedback reports, work_loop, reflect_loop archives, and "
+            "outer-loop review notes instead."
+        )

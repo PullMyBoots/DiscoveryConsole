@@ -11,7 +11,6 @@ from pathlib import Path
 from coral.workspace.breadcrumbs import (
     find_breadcrumb_file,
     find_coral_breadcrumb,
-    read_island_breadcrumb,
 )
 
 
@@ -296,15 +295,15 @@ def read_agent_id(start: str | Path | None = None) -> str:
     return "unknown"
 
 
-def find_worktree_coral_dir_and_island(
+def find_worktree_coral_dir(
     start: str | Path | None = None,
-) -> tuple[Path, str | None] | None:
-    """Find the current worktree's run and island without falling back or exiting."""
+) -> Path | None:
+    """Find the current worktree's run without falling back or exiting."""
     found = find_coral_breadcrumb(start)
     if found is None:
         return None
-    coral_dir, breadcrumb_dir = found
-    return coral_dir, read_island_breadcrumb(coral_dir, breadcrumb_dir)
+    coral_dir, _breadcrumb_dir = found
+    return coral_dir
 
 
 def read_direction(coral_dir: Path) -> str:
@@ -317,39 +316,6 @@ def read_direction(coral_dir: Path) -> str:
             config = yaml.safe_load(f) or {}
         return (config.get("grader") or {}).get("direction", "maximize")
     return "maximize"
-
-
-def find_coral_dir_and_island(
-    task: str | None = None,
-    run: str | None = None,
-) -> tuple[Path, str | None]:
-    """Find the .coral directory and the current agent's island_id, if any.
-
-    Search order:
-    1. Walk up from cwd looking for a ``.coral_dir`` breadcrumb. If found,
-       pair it with a ``.coral_island`` breadcrumb in the same directory.
-       ``island_id`` is the breadcrumb's contents when:
-         - the file exists, AND
-         - its value is non-empty, AND
-         - ``coral_dir / "islands" / <value>`` is a real directory.
-       Otherwise ``island_id`` is None (single-island run, or stale
-       breadcrumb pointing at a deleted island).
-    2. Fall back to :func:`find_coral_dir`'s ``--task``/``--run`` logic and
-       return ``(coral_dir, None)`` — an explicit ``--task`` must override
-       the worktree scope, never silently keep it.
-
-    Returns:
-        (coral_dir, island_id) — island_id is None unless the caller is
-        inside an agent worktree that advertises a valid island.
-    """
-    if not task and not run:
-        found = find_worktree_coral_dir_and_island()
-        if found is not None:
-            return found
-
-    # Fall through to --task/--run discovery; explicit --task/--run wins
-    # and we never silently scope by island in that mode.
-    return find_coral_dir(task, run), None
 
 
 def find_coral_dir(task: str | None = None, run: str | None = None) -> Path:

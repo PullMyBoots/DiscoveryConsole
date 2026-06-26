@@ -9,6 +9,51 @@ from pathlib import Path
 
 from coral.config import CoralConfig
 
+REQUIRED_EVAL_SPEC_SECTIONS = (
+    "agent api",
+    "evaluation level",
+    "metrics",
+    "acceptance",
+    "progress protocol",
+    "eval profiles",
+    "feedback report",
+)
+
+REQUIRED_EVAL_SPEC_CONCEPTS: dict[str, tuple[str, ...]] = {
+    "breakthrough metrics": ("breakthrough", "improve", "提升", "突破"),
+    "guardrail metrics": ("guardrail", "safety", "correctness", "保底", "兜底", "底线"),
+    "anti-cheating checks": (
+        "anti-cheat",
+        "anti cheating",
+        "anti-cheating",
+        "cheat",
+        "overfit",
+        "overfitting",
+        "leakage",
+        "hidden-data",
+        "hidden data",
+        "作弊",
+        "过拟合",
+        "泄漏",
+    ),
+}
+
+
+def validate_eval_spec_text(text: str) -> list[str]:
+    """Return missing eval-spec contract items for a candidate eval_spec.md."""
+    normalized = text.lower()
+    missing: list[str] = [
+        f"section: {section}"
+        for section in REQUIRED_EVAL_SPEC_SECTIONS
+        if f"## {section}" not in normalized
+    ]
+    missing.extend(
+        f"concept: {concept}"
+        for concept, keywords in REQUIRED_EVAL_SPEC_CONCEPTS.items()
+        if not any(keyword in normalized for keyword in keywords)
+    )
+    return missing
+
 
 def validate_task(task_dir: Path) -> list[str]:
     """Validate a task directory. Returns a list of error strings (empty = valid)."""
@@ -51,5 +96,16 @@ def validate_task(task_dir: Path) -> list[str]:
             p = task_dir / p
         if not p.exists():
             errors.append(f"Private file not found: {private_path}")
+
+    # 5. If the task ships an eval spec, enforce the standard eval contract
+    # sections. Missing eval_spec.md is tolerated for legacy tasks.
+    eval_spec = task_dir / "knowledge" / "eval_spec.md"
+    if eval_spec.exists():
+        missing = validate_eval_spec_text(eval_spec.read_text(errors="ignore"))
+        if missing:
+            errors.append(
+                "knowledge/eval_spec.md is missing required contract item(s): "
+                + ", ".join(missing)
+            )
 
     return errors

@@ -141,11 +141,6 @@ agents:
   runtime: claude_code
   model: opus
   max_turns: 200
-  heartbeat:
-    - name: reflect
-      every: 1
-    - name: consolidate
-      every: 10
 
 workspace:
   results_dir: "./results"

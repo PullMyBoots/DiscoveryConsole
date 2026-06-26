@@ -43,22 +43,23 @@ class _HelpOnErrorParser(argparse.ArgumentParser):
 _VISIBLE_COMMANDS = [
     "init",
     "validate",
+    "prepare",
     "start",
     "resume",
     "stop",
     "status",
     "log",
     "show",
-    "notes",
+    "kb",
     "skills",
     "runs",
     "ui",
+    "run",
     "eval",
     "wait",
     "diff",
     "revert",
     "checkout",
-    "heartbeat",
 ]
 
 
@@ -99,9 +100,10 @@ def main() -> None:
 Getting Started:
   init            Create a new task directory
   validate        Test your grader against seed code
+  prepare         Create a timestamp run and agent workspaces
 
 Running Agents:
-  start           Launch agents on a task
+  start           Launch agents from a prepared run
   resume          Resume a previous run
   stop            Shut down running agents
   status          Show agent health and leaderboard
@@ -109,7 +111,7 @@ Running Agents:
 Inspecting Results:
   log             List and search attempts (leaderboard)
   show            Show details of a specific attempt
-  notes           Browse shared notes
+  kb              Index-first knowledge lookup and maintenance
   skills          Browse shared skills
   runs            List runs (active only; --all for stopped)
 
@@ -117,12 +119,12 @@ Dashboard:
   ui              Launch the web dashboard
 
 Agent Internals:
+  run             Run an open A-space script with job logs/artifacts
   eval            Stage, commit, and evaluate changes
   wait            Wait for a submitted eval's score
   diff            Show uncommitted changes
   revert          Undo the last commit
   checkout        Reset to a previous attempt
-  heartbeat       View/modify per-agent heartbeat actions
 
 Run 'coral <command> --help' for details on any command."""
 
@@ -168,24 +170,54 @@ Run 'coral <command> --help' for details on any command."""
 
     # --- Running Agents ---
 
-    p_start = sub.add_parser(
-        "start",
-        help="Launch agents on a task",
-        description="Launch autonomous agents on a task. Auto-wraps in tmux by default.",
+    p_prepare = sub.add_parser(
+        "prepare",
+        help="Create a prepared run workspace",
+        description=(
+            "Create a timestamp run, shared state, repo clone, and per-agent "
+            "workspaces without launching agents."
+        ),
         epilog=(
             "Examples:\n"
-            "  coral start -c task.yaml\n"
-            "  coral start -c task.yaml agents.count=4 agents.model=opus\n"
-            "  coral start -c task.yaml run.verbose=true run.ui=true run.session=local"
+            "  coral prepare -c task.yaml\n"
+            "  coral prepare -c task.yaml agents.count=4"
         ),
         formatter_class=_CommandHelpFormatter,
     )
-    p_start.add_argument("--config", "-c", required=True, help="Path to task config YAML")
+    p_prepare.add_argument("--config", "-c", required=True, help="Path to task config YAML")
+    p_prepare.add_argument(
+        "overrides",
+        nargs="*",
+        default=[],
+        help="Config overrides as key=value (e.g. agents.count=4 run.verbose=true)",
+    )
+
+    p_start = sub.add_parser(
+        "start",
+        help="Launch agents from a prepared run",
+        description="Launch autonomous agents from a prepared timestamp run.",
+        epilog=(
+            "Examples:\n"
+            "  coral start -c results/my-task/latest/.coral/config.yaml\n"
+            "  coral start -c results/my-task/2026-06-26_120000/.coral/config.yaml\n"
+            "  coral start -c results/my-task/latest/.coral/config.yaml run.ui=true"
+        ),
+        formatter_class=_CommandHelpFormatter,
+    )
+    p_start.add_argument(
+        "--config",
+        "-c",
+        required=True,
+        help="Path to a prepared run's .coral/config.yaml",
+    )
     p_start.add_argument(
         "overrides",
         nargs="*",
         default=[],
-        help="Config overrides as key=value (e.g. agents.count=4 run.verbose=true run.session=local)",
+        help=(
+            "Runtime-safe overrides as key=value "
+            "(e.g. run.verbose=true run.session=local agents.model=opus)"
+        ),
     )
 
     p_resume = sub.add_parser(
@@ -213,7 +245,7 @@ Run 'coral <command> --help' for details on any command."""
         "overrides",
         nargs="*",
         default=[],
-        help="Config overrides as key=value (e.g. agents.model=opus run.verbose=true)",
+        help="Runtime-safe overrides as key=value (e.g. agents.model=opus run.verbose=true)",
     )
 
     p_stop = sub.add_parser(
@@ -304,27 +336,96 @@ Run 'coral <command> --help' for details on any command."""
     )
     _add_run_args(p_attempt_alias)
 
-    p_notes = sub.add_parser(
-        "notes",
-        help="Browse shared notes",
-        description="List, search, or read agent notes.",
+    p_kb = sub.add_parser(
+        "kb",
+        help="Index-first knowledge lookup and maintenance",
+        description=(
+            "Query and maintain CORAL knowledge through a small controlled CLI.\n"
+            "Use `index` first, then `read <id>`; avoid browsing knowledge files directly."
+        ),
         epilog=(
             "Examples:\n"
-            "  coral notes                   List all notes\n"
-            "  coral notes -n 5              Last 5 notes\n"
-            "  coral notes --search 'idea'   Search notes\n"
-            "  coral notes --read 3          Read note #3"
+            "  coral kb index manual\n"
+            "  coral kb index external\n"
+            "  coral kb index practice --by score\n"
+            "  coral kb index practice --by route\n"
+            "  coral kb read src-001\n"
+            "  coral kb add external ./paper.pdf --kind paper --title \"Paper\" --summary \"...\"\n"
+            "  coral kb remove src-001\n"
+            "  coral kb note \"batch 128 needs warmup\" --tag training\n"
+            "  coral kb archive --attempt abc123 --route \"cache-aware batching\""
         ),
         formatter_class=_CommandHelpFormatter,
     )
-    p_notes.add_argument("--search", "-s", help="Search notes by keyword")
-    p_notes.add_argument("-n", "--recent", type=int, help="Show N most recent")
-    p_notes.add_argument("--read", "-r", help="Read a specific note by number or name")
-    p_notes.add_argument(
-        "--history", action="store_true", help="Show shared state checkpoint history"
+    _add_run_args(p_kb)
+    kb_sub = p_kb.add_subparsers(dest="kb_action")
+
+    kb_index = kb_sub.add_parser("index", help="Show an index before reading details")
+    kb_index.add_argument("space", choices=["manual", "external", "practice"])
+    kb_index.add_argument(
+        "--by",
+        choices=["score", "route", "agent", "metric"],
+        default="score",
+        help="Practice index view (default: score)",
     )
-    p_notes.add_argument("--diff", metavar="HASH", help="Show diff for a checkpoint commit")
-    _add_run_args(p_notes)
+    kb_index.add_argument("--metric", help="Metric name for --by metric")
+    kb_index.add_argument("--agent", help="Filter practice index by agent")
+    kb_index.add_argument(
+        "--direction",
+        choices=["maximize", "minimize"],
+        default=None,
+        help="Score direction for ranking practice knowledge (default: grader.direction)",
+    )
+    kb_index.add_argument("--all", action="store_true", help="Include archived external sources")
+    _add_run_args(kb_index)
+
+    kb_read = kb_sub.add_parser("read", help="Read one indexed knowledge item")
+    kb_read.add_argument("id", help="manual-..., src-..., node-..., or route-...")
+    _add_run_args(kb_read)
+
+    kb_add = kb_sub.add_parser("add", help="Add an external knowledge source")
+    kb_add.add_argument("space", choices=["external"])
+    kb_add.add_argument("source", help="Path, directory, or URL")
+    kb_add.add_argument("--kind", choices=["paper", "repo", "web", "doc", "dataset", "other"], default="other")
+    kb_add.add_argument("--title", required=True)
+    kb_add.add_argument("--summary", default="")
+    kb_add.add_argument("--tags", help="Comma-separated tags")
+    kb_add.add_argument("--by", help="Creator name (default: agent id or user)")
+    kb_add.add_argument("--workdir", help="Working directory for agent id detection")
+    _add_run_args(kb_add)
+
+    kb_remove = kb_sub.add_parser("remove", help="Archive an external source")
+    kb_remove.add_argument("id", help="Source id, e.g. src-001")
+    kb_remove.add_argument("--by", help="Remover name (default: agent id or user)")
+    kb_remove.add_argument("--workdir", help="Working directory for agent id detection")
+    _add_run_args(kb_remove)
+
+    kb_note = kb_sub.add_parser("note", help="Append a short note to the current agent notebook")
+    kb_note.add_argument("text")
+    kb_note.add_argument("--tag", default="")
+    kb_note.add_argument("--agent", help="Agent ID (default: read .coral_agent_id)")
+    kb_note.add_argument("--workdir", help="Working directory for agent id detection")
+    _add_run_args(kb_note)
+
+    kb_notebook = kb_sub.add_parser("notebook", help="Read or reset the current agent notebook")
+    kb_notebook.add_argument("--agent", help="Agent ID (default: read .coral_agent_id)")
+    kb_notebook.add_argument("--set", help="Replace notebook content from this markdown file")
+    kb_notebook.add_argument("--reason", default="external-adjustment", help="Archive reason for --set")
+    kb_notebook.add_argument("--by", help="Actor name for --set archive metadata")
+    kb_notebook.add_argument("--workdir", help="Working directory for agent id detection")
+    _add_run_args(kb_notebook)
+
+    kb_archive = kb_sub.add_parser("archive", help="Archive an eval into the agent practice chain")
+    kb_archive.add_argument("--attempt", required=True, help="Attempt commit hash or prefix")
+    kb_archive.add_argument("--agent", help="Agent ID (default: read .coral_agent_id)")
+    kb_archive.add_argument("--route", default="", help="Technical route label")
+    kb_archive.add_argument("--method", default="", help="Short method summary")
+    kb_archive.add_argument("--method-file", help="Read method summary from a markdown file")
+    kb_archive.add_argument("--reflection", default="", help="Reflect-loop note")
+    kb_archive.add_argument("--reflection-file", help="Read reflect-loop note from a markdown file")
+    kb_archive.add_argument("--next-plan", help="Markdown file used to reset the notebook")
+    kb_archive.add_argument("--workdir", help="Working directory for agent id detection")
+    _add_run_args(kb_archive)
 
     p_skills = sub.add_parser(
         "skills",
@@ -372,6 +473,36 @@ Run 'coral <command> --help' for details on any command."""
 
     # --- Agent Internals ---
 
+    p_run = sub.add_parser(
+        "run",
+        help="Run an open A-space script",
+        description=(
+            "Run a command as an open A-space compute job. CORAL records the\n"
+            "job, injects resource/profile environment variables, writes logs,\n"
+            "and exposes artifacts under public/jobs/<job_id>/artifacts.\n"
+            "The local backend is disabled by default for hidden L2/L3 tasks\n"
+            "because same-user subprocesses cannot isolate .coral/private."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  coral run -- python scripts/probe.py\n"
+            "  coral run --profile cpu-large -- python experiments/check.py\n"
+            "  coral run --profile gpu-small --timeout 1800 -- python train_probe.py"
+        ),
+        formatter_class=_CommandHelpFormatter,
+    )
+    p_run.add_argument("--agent", help="Agent ID (default: read from .coral_agent_id)")
+    p_run.add_argument("--workdir", help="Working directory (default: cwd)")
+    p_run.add_argument(
+        "--class",
+        dest="job_class",
+        default="explore",
+        help="Compute job class (default: explore)",
+    )
+    p_run.add_argument("--profile", help="Compute profile (default: class default)")
+    p_run.add_argument("--timeout", type=int, default=None, help="Override profile timeout seconds")
+    p_run.add_argument("command", nargs=argparse.REMAINDER, help="Command to run after --")
+
     p_eval = sub.add_parser(
         "eval",
         help="Stage, commit, and evaluate changes",
@@ -386,7 +517,8 @@ Run 'coral <command> --help' for details on any command."""
             '  coral eval -m "Optimized inner loop"\n'
             '  coral eval -m "Try variant A" --no-wait\n'
             '  coral eval -m "Heavy benchmark" --timeout 1800\n'
-            '  coral eval --tune -m "Sweep lr=1e-3 vs 3e-4"'
+            '  coral eval --tune -m "Sweep lr=1e-3 vs 3e-4"\n'
+            '  coral eval --final -m "Final sealed validation"'
         ),
         formatter_class=_CommandHelpFormatter,
     )
@@ -413,9 +545,18 @@ Run 'coral <command> --help' for details on any command."""
         default=False,
         help=(
             "Submit as a tune-mode attempt: scored and recorded normally, but "
-            "excluded from the agent's plateau / heartbeat budget. Use for "
-            "hyperparameter sweeps and config exploration that shouldn't "
-            "trigger pivot prompts."
+            "excluded from the real-eval reflect_loop archive trigger. Use for "
+            "hyperparameter sweeps and config exploration."
+        ),
+    )
+    p_eval.add_argument(
+        "--final",
+        action="store_true",
+        default=False,
+        help=(
+            "Submit an L3 sealed C-space final evaluation. Disabled unless "
+            "evaluation.allow_loop_final=true; C-space is normally run outside "
+            "the agent search loop."
         ),
     )
 
@@ -465,65 +606,6 @@ Run 'coral <command> --help' for details on any command."""
     p_checkout.add_argument("--workdir", help="Working directory (default: cwd)")
     _add_run_args(p_checkout)
 
-    p_heartbeat = sub.add_parser(
-        "heartbeat",
-        help="View/modify per-agent heartbeat actions",
-        description="Show or modify per-agent heartbeat configuration.",
-        epilog=(
-            "Examples:\n"
-            "  coral heartbeat                              Show current config\n"
-            "  coral heartbeat set reflect --every 3        Reflect every 3 evals\n"
-            '  coral heartbeat set review --every 5 --prompt "..."  Custom action\n'
-            "  coral heartbeat remove consolidate           Remove action\n"
-            "  coral heartbeat reset                        Reset to task YAML defaults"
-        ),
-        formatter_class=_CommandHelpFormatter,
-    )
-    _add_run_args(p_heartbeat)
-    hb_sub = p_heartbeat.add_subparsers(dest="heartbeat_command")
-
-    hb_set = hb_sub.add_parser("set", help="Add or update a heartbeat action")
-    hb_set.add_argument("name", help="Action name (e.g. reflect, consolidate)")
-    hb_set.add_argument(
-        "--every",
-        type=int,
-        required=True,
-        help="Trigger every N evals (or stall threshold for plateau)",
-    )
-    hb_set.add_argument("--prompt", help="Prompt text (required for custom actions)")
-    hb_set.add_argument(
-        "--trigger",
-        choices=["interval", "plateau"],
-        default=None,
-        help="Trigger type: 'interval' (every N evals) or 'plateau' (after N non-improving evals)",
-    )
-    hb_set.add_argument(
-        "--global",
-        dest="is_global",
-        action="store_true",
-        default=None,
-        help="Use global eval counter (shared across all agents)",
-    )
-    hb_set.add_argument(
-        "--epsilon",
-        type=float,
-        default=None,
-        help=(
-            "Minimum score delta over the prior plateau-anchor that counts as "
-            "improvement (only meaningful for --trigger plateau). Default 0 = "
-            "any nudge resets the streak. Set to your task's noise floor "
-            "(e.g. 0.001) so tiny inch-ups don't keep blocking pivot."
-        ),
-    )
-    _add_run_args(hb_set)
-
-    hb_remove = hb_sub.add_parser("remove", help="Remove a heartbeat action")
-    hb_remove.add_argument("name", help="Action name to remove")
-    _add_run_args(hb_remove)
-
-    hb_reset = hb_sub.add_parser("reset", help="Reset to task YAML defaults")
-    _add_run_args(hb_reset)
-
     # --- Parse and dispatch ---
 
     args = parser.parse_args()
@@ -535,25 +617,27 @@ Run 'coral <command> --help' for details on any command."""
     # Lazy imports for fast startup
     from coral.cli.author import cmd_init, cmd_validate
     from coral.cli.eval import cmd_checkout, cmd_diff, cmd_eval, cmd_revert, cmd_wait
-    from coral.cli.heartbeat import cmd_heartbeat
-    from coral.cli.query import cmd_log, cmd_notes, cmd_runs, cmd_show, cmd_skills
-    from coral.cli.start import cmd_resume, cmd_start, cmd_status, cmd_stop
+    from coral.cli.kb import cmd_kb
+    from coral.cli.query import cmd_log, cmd_runs, cmd_show, cmd_skills
+    from coral.cli.run import cmd_run
+    from coral.cli.start import cmd_prepare, cmd_resume, cmd_start, cmd_status, cmd_stop
     from coral.cli.ui import cmd_ui
 
     commands = {
         "start": cmd_start,
+        "prepare": cmd_prepare,
         "resume": cmd_resume,
         "stop": cmd_stop,
         "status": cmd_status,
+        "run": cmd_run,
         "eval": cmd_eval,
         "wait": cmd_wait,
         "revert": cmd_revert,
         "checkout": cmd_checkout,
         "diff": cmd_diff,
-        "heartbeat": cmd_heartbeat,
         "log": cmd_log,
         "show": cmd_show,
-        "notes": cmd_notes,
+        "kb": cmd_kb,
         "skills": cmd_skills,
         "runs": cmd_runs,
         "init": cmd_init,

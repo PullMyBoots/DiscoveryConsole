@@ -17,9 +17,10 @@ Run `coral --help` for the full command list, or `coral <command> --help` for de
 ### Getting Started
 - `coral init` — Scaffold a new task directory
 - `coral validate` — Test your grader against seed code
+- `coral prepare` — Create a timestamp run and agent workspaces
 
 ### Running Agents
-- `coral start` — Launch agents on a task
+- `coral start` — Launch agents from a prepared timestamp
 - `coral resume` — Resume a previous run
 - `coral stop` — Shut down running agents
 - `coral status` — Show agent health and leaderboard
@@ -27,7 +28,7 @@ Run `coral --help` for the full command list, or `coral <command> --help` for de
 ### Inspecting Results
 - `coral log` — List and search attempts (leaderboard)
 - `coral show` — Show details of a specific attempt
-- `coral notes` — Browse shared notes
+- `coral kb` — Index-first knowledge lookup and maintenance
 - `coral skills` — Browse shared skills
 - `coral runs` — List all runs
 
@@ -36,9 +37,9 @@ Run `coral --help` for the full command list, or `coral <command> --help` for de
 
 ### Agent Internals
 - `coral eval` — Stage, commit, and evaluate changes
+- `coral run` — Run open A-space compute through the configured runner
 - `coral diff` — Show uncommitted changes
 - `coral revert` — Undo the last commit
 - `coral checkout` — Reset to a previous attempt
-- `coral heartbeat` — View/modify heartbeat actions
 
 See the [full reference](/cli/reference) for all flags and examples.

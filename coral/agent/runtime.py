@@ -192,7 +192,7 @@ def write_coral_log_entry(
     """Write a CORAL prompt entry to the agent's stream-json log.
 
     These entries use type="coral" so the web UI can identify and highlight them.
-    Source values: "start", "heartbeat:reflect", "heartbeat:consolidate", "restart".
+    Source values include "start", "reflect_loop", "restart", "timeout", and dashboard/manual control sources.
     """
     entry: dict[str, Any] = {
         "type": "coral",

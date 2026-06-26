@@ -37,97 +37,94 @@ def _distribution_name(name: str) -> str:
 
 
 def _create_knowledge_skeleton(path: Path) -> None:
-    """Create the default research-workbench knowledge tree."""
+    """Create the default simplified knowledge tree."""
     for subdir in (
-        "capsules",
-        "maps",
-        "packs",
-        "sources/papers",
-        "sources/repos",
-        "sources/web",
-        "sources/docs",
-        "sources/datasets",
-        "notes/research",
-        "notes/experiments",
-        "notes/synthesis",
-        "notes/open-questions",
+        "manuals",
+        "external/items",
+        "practice/agents",
         "briefs/agent-seeds",
-        "briefs/islands",
-        "briefs/island-themes",
-        "inbox",
-        "archive",
     ):
         (path / subdir).mkdir(parents=True, exist_ok=True)
 
-    manifest = path / "manifest.jsonl"
-    if not manifest.exists():
-        manifest.write_text("")
     (path / "index.md").write_text(
-        "# Knowledge Index\n\n"
-        "## Read Order\n"
-        "1. Start with the relevant `packs/<agent-id>.md` file.\n"
-        "2. Open only the capsules named by that packet.\n"
-        "3. Read raw files under `sources/` only when a capsule says the raw source is needed.\n\n"
-        "## Start Here For Codex\n"
-        "- Add task context in `briefs/task-context.md`.\n"
-        "- Fill the eval trust design in `eval_spec.md` before launch.\n"
-        "- Add agent launch briefs in `briefs/agent-seeds/`.\n"
-        "- Add multi-island themes in `briefs/islands/` when islands are enabled.\n"
-        "- Convert useful sources into lightweight capsules in `capsules/`.\n"
-        "- Generate per-agent reading packets in `packs/`.\n"
-        "- Add experiment reflections in `notes/experiments/`.\n\n"
-        "## Active Maps\n"
-        "- Method routes: `maps/methods.md`\n"
-        "- Run notes: `notes/index.md`\n"
+        "# Knowledge Directory\n\n"
+        "This directory is an index-first knowledge base. Do not read it as a normal flat folder.\n\n"
+        "## Start Here\n"
+        "- `eval_spec.md`: the scoring contract and safety rules.\n"
+        "- `manuals/`: short framework manuals.\n"
+        "- `briefs/agent-seeds/`: Codex-generated starting plan and first eval script for each agent.\n\n"
+        "## Two Knowledge Types\n"
+        "- External knowledge: papers, repos, docs, datasets, and web references. Indexed by `external/index.jsonl` and stored under `external/items/`.\n"
+        "- Practice knowledge: eval-linked notes, routes, score curves, and reflections under `practice/agents/`.\n\n"
+        "## Optional Launch Bundles\n"
+        "`briefs/agent-seeds/` contains Codex-prepared starting routes and first-eval scripts. It is launch scaffolding, not a third knowledge store.\n\n"
+        "## Before And After Launch\n"
+        "- Before `coral start`: read these files directly; Codex should fill in `eval_spec.md`, external references, and agent seeds.\n"
+        "- After `coral start`: use `coral kb ...` inside the active run/timestamp.\n\n"
+        "## Use These Commands After Launch\n"
+        "- `coral kb index manual`: show manuals.\n"
+        "- `coral kb index external`: show external references.\n"
+        "- `coral kb index practice --by score|route|agent|metric`: show run experience by the view you need.\n"
+        "- `coral kb read <id>`: open one indexed item.\n"
+        "- `coral kb add external <path-or-url> --kind <kind> --title \"...\"`: add a reference.\n"
+        "- `coral kb note \"...\"`: add a practice note.\n"
     )
+    external_index = path / "external" / "index.jsonl"
+    if not external_index.exists():
+        external_index.write_text("")
+    manuals = {
+        "evaluation-spaces.md": (
+            "# Evaluation Spaces\n\n"
+            "- L1: open A-space scoring.\n"
+            "- L2: open A-space exploration and hidden B-space iterative scoring.\n"
+            "- L3: open A-space exploration, hidden B-space iteration, sealed C-space final.\n"
+        ),
+        "submit-system.md": (
+            "# Submit System\n\n"
+            "`coral eval` stages changes, commits, submits official scoring, and waits by default.\n"
+            "Use `coral show <commit> --diff` to inspect an evaluated code change.\n"
+        ),
+        "knowledge-cli.md": (
+            "# Knowledge CLI\n\n"
+            "Use `coral kb index ...` first, then `coral kb read <id>`.\n"
+        ),
+    }
+    for filename, content in manuals.items():
+        manual = path / "manuals" / filename
+        if not manual.exists():
+            manual.write_text(content)
     eval_spec = path / "eval_spec.md"
     if not eval_spec.exists():
         eval_spec.write_text(
             "# Eval Spec\n\n"
-            "## Breakthrough Metrics\n"
-            "- Define the metrics the run should improve.\n\n"
-            "## Guardrail Metrics\n"
-            "- Define minimum acceptable behavior and hard failure thresholds.\n\n"
-            "## Anti-Cheating and Overfitting Checks\n"
-            "- Define leakage checks, invalid-output checks, robustness cases, and "
-            "held-out or stress evaluation.\n\n"
-            "## Scalar Score\n"
-            "- Define how breakthrough and guardrail metrics become the single "
-            "CORAL scheduling score.\n\n"
+            "## Agent API\n"
+            "- `coral eval -m \"...\"`: submit the current solution for the task's ranking space.\n"
+            "- `coral eval --tune -m \"...\"`: optional cheaper scoring for exploration, if supported.\n"
+            "- `coral run -- <command>`: run an open A-space exploration script with tracked logs/artifacts, if an isolated or explicitly enabled runner is configured.\n"
+            "- Document required files, input/output formats, and forbidden access here.\n\n"
+            "## Evaluation Level\n"
+            "- L1: A-space scoring is open to agents.\n"
+            "- L2: A-space is open exploration; B-space is hidden ranking eval.\n"
+            "- L3: A-space is open exploration; B-space is hidden iteration; C-space is sealed final eval.\n\n"
+            "## Metrics\n"
+            "- Define public metric names, directions, and safe explanations.\n"
+            "- Breakthrough metrics define the primary score or research improvement target.\n"
+            "- Guardrail metrics define correctness, runtime, memory, safety, and regression constraints.\n"
+            "- Anti-cheating checks define leakage, memorization, hidden-data access, and overfitting safeguards.\n"
+            "- Do not disclose hidden case IDs, answer keys, private weights, or exploitable scoring details.\n\n"
+            "## Acceptance\n"
+            "- Define hard requirements such as minimum score, required tests, runtime limit, memory limit, and leakage checks.\n\n"
+            "## Progress Protocol\n"
+            "- Long evals must call `self.report_progress(...)` so the control panel can render progress.\n\n"
             "## Eval Profiles\n"
-            "- quick:\n"
-            "- medium:\n"
-            "- full:\n"
-            "- stress:\n"
+            "- quick: same scoring mechanism, fewer cases/seeds, cheaper iteration, higher variance.\n"
+            "- medium: stronger signal at moderate cost.\n"
+            "- full: main validation profile.\n"
+            "- stress: robustness, leakage, or distribution-shift checks.\n\n"
+            "## Feedback Report\n"
+            "- Successful reports include total score, accepted status, top-5 rank context, self-history, baselines, and per-metric values/ranks.\n"
+            "- Failed reports include failure stage, error type, error message, and log path.\n"
         )
-    (path / "notes" / "index.md").write_text(
-        "# Notes Index\n\n"
-        "## Research\n"
-        "- (none yet)\n\n"
-        "## Experiments\n"
-        "- (none yet)\n\n"
-        "## Open Questions\n"
-        "- (none yet)\n"
-    )
-    (path / "maps" / "methods.md").write_text(
-        "# Method Map\n\n"
-        "Keep this file short. List only active method families that should guide agent search.\n\n"
-        "## Active Routes\n"
-        "- (none yet)\n\n"
-        "## Failed Or Risky Routes\n"
-        "- (none yet)\n"
-    )
-    (path / "packs" / "global.md").write_text(
-        "# Global Knowledge Packet\n\n"
-        "This is the shared lightweight entry point. Agent-specific packets should stay smaller.\n\n"
-        "## Always Read\n"
-        "- `eval_spec.md`\n"
-        "- `maps/methods.md`\n"
-        "- `notes/index.md`\n\n"
-        "## Source Rule\n"
-        "Prefer capsules over raw sources. Put newly found material in `inbox/` until reviewed.\n"
-    )
-
 
 def cmd_init(args: argparse.Namespace) -> None:
     """Create a new task directory with a packaged grader.
@@ -158,6 +155,9 @@ def cmd_init(args: argparse.Namespace) -> None:
         f"    Describe your task here. Agents read this verbatim from CORAL.md.\n"
         f"    Reference the program file by name (solution.py) and describe what\n"
         f'    it must do — e.g. "solution.py must print a single float to stdout".\n'
+        f"\n"
+        f"evaluation:\n"
+        f"  level: L2                 # L1=open A, L2=open A + hidden B, L3=open A + hidden B + sealed C\n"
         f"\n"
         f"grader:\n"
         f'  entrypoint: "{module_name}.grader:Grader"\n'
@@ -194,6 +194,32 @@ def cmd_init(args: argparse.Namespace) -> None:
         f"  args:\n"
         f'    program_file: "solution.py"\n'
         f"\n"
+        f"compute:\n"
+        f"  backend: local              # local subprocess runner for open A-space jobs\n"
+        f"  allow_unisolated_local: false # keep false for L2/L3 unless this is a trusted local-only run\n"
+        f"  pool:\n"
+        f"    cpu_cores: 0\n"
+        f"    memory_gb: 0\n"
+        f"    gpu_count: 0\n"
+        f"    gpu_ids: []\n"
+        f"  classes:\n"
+        f"    explore:\n"
+        f"      default_profile: cpu-small\n"
+        f"      allow_private_data: false\n"
+        f"      network: false\n"
+        f"      max_running_per_agent: 1\n"
+        f"  profiles:\n"
+        f"    cpu-small:\n"
+        f"      cpu_cores: 2\n"
+        f"      memory_gb: 8\n"
+        f"      gpu_count: 0\n"
+        f"      timeout: 600\n"
+        f"    gpu-small:\n"
+        f"      cpu_cores: 4\n"
+        f"      memory_gb: 24\n"
+        f"      gpu_count: 1\n"
+        f"      timeout: 1800\n"
+        f"\n"
         f"agents:\n"
         f"  count: 1\n"
         f"  runtime: claude_code         # claude_code | codex | cursor | kiro | opencode | 'pkg.module:Cls' for a custom runtime\n"
@@ -203,7 +229,7 @@ def cmd_init(args: argparse.Namespace) -> None:
         f"  snapshot: true\n"
         f"\n"
         f"workspace:\n"
-        f'  repo_path: "./seed"          # relative to where you run `coral start`\n'
+        f'  repo_path: "./seed"          # relative to the task directory\n'
         f"\n"
         f"run:\n"
         f"  max_runtime_seconds: 0      # 0 = no run-level wall-clock deadline\n"
@@ -254,38 +280,63 @@ def cmd_init(args: argparse.Namespace) -> None:
         f"class Grader(TaskGrader):\n"
         f'    """Evaluate agent submissions for the {task_name} task."""\n'
         f"\n"
-        f"    def evaluate(self) -> float:\n"
+        f"    def evaluate(self):\n"
         f"        # self.codebase_path  — agent's worktree (read-only; writes are discarded)\n"
         f"        # self.private_dir    — .coral/private/ (hidden answer keys, fixtures)\n"
         f"        # self.args           — dict from task.yaml -> grader.args\n"
         f"        # self.timeout        — eval timeout in seconds\n"
         f"        #\n"
-        f"        # Return a float, or use self.score(value, explanation=...)\n"
-        f"        # or self.fail(reason) to record a failure with feedback.\n"
+        f"        # Prefer self.report_score(...) / self.fail_report(...) so CORAL can\n"
+        f"        # attach rank, top-5, self-history, baseline, and metric reports.\n"
         f'        profile = self.args.get("profile", self.profile)\n'
         f'        self.report_progress(current=0, total=1, phase=profile, message="running seed program")\n'
         f'        program_file = self.args.get("program_file", "solution.py")\n'
         f"        result = self.run_program(program_file)\n"
         f"\n"
         f"        if result.returncode != 0:\n"
-        f'            return self.fail(f"{{program_file}} crashed: {{result.stderr[:200]}}")\n'
+        f"            return self.fail_report(\n"
+        f'                error_message=f"{{program_file}} crashed: {{result.stderr[:200]}}",\n'
+        f'                error_type="runtime_error",\n'
+        f'                stage="run_program",\n'
+        f"            )\n"
         f"\n"
         f"        try:\n"
-        f"            return float(result.stdout.strip())\n"
+        f"            value = float(result.stdout.strip())\n"
         f"        except ValueError:\n"
-        f'            return self.fail(f"Expected a single float on stdout, got: {{result.stdout[:80]!r}}")\n'
+        f"            return self.fail_report(\n"
+        f'                error_message=f"Expected a single float on stdout, got: {{result.stdout[:80]!r}}",\n'
+        f'                error_type="invalid_output",\n'
+        f'                stage="parse_output",\n'
+        f"            )\n"
+        f"\n"
+        f"        return self.report_score(\n"
+        f"            value,\n"
+        f'            explanation="Scalar score parsed from solution output.",\n'
+        f"            accepted=value >= 0.0,\n"
+        f'            acceptance={{"min_score": 0.0, "observed_score": value}},\n'
+        f"            metrics={{\n"
+        f'                "score": {{\n'
+        f'                    "value": value,\n'
+        f'                    "direction": self.config.direction,\n'
+        f'                    "explanation": "Task scalar score.",\n'
+        f"                }},\n"
+        f"            }},\n"
+        f'            message_for_agent="Use the score, rank, baseline delta, and self-history to decide the next change.",\n'
+        f"        )\n"
     )
 
     print(f"Created task at {task_path}/")
     print("  task.yaml                 — task config + grader entrypoint")
     print("  seed/solution.py          — baseline the agent will iterate on")
-    print("  knowledge/                — papers, repos, notes, briefs, and sources")
+    print("  knowledge/                — eval spec, manuals, external index, practice memory")
     print(f"  grader/                   — packaged grader ({dist_name})")
     print(f"  grader/src/{module_name}/grader.py")
     print("\nNext:")
     print(f"  cd {task_path.name}")
     print("  coral validate .          # bootstraps grader venv + runs grader on seed/")
-    print("  coral start -c task.yaml  # launch agents")
+    print("  coral prepare -c task.yaml")
+    print("  coral validate --run-dir results/<task>/latest/.coral")
+    print("  coral start -c results/<task>/latest/.coral/config.yaml")
 
 
 def cmd_validate(args: argparse.Namespace) -> None:

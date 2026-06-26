@@ -25,7 +25,7 @@ from coral.hub.attempts import (
 )
 from coral.hub.checkpoint import checkpoint
 from coral.types import BUDGET_CLASS_TUNE, Attempt
-from coral.workspace.breadcrumbs import find_coral_breadcrumb, read_island_breadcrumb
+from coral.workspace.breadcrumbs import find_coral_breadcrumb
 
 # Legacy alias — external tests/hooks may still import the underscore-prefixed
 # name. Prefer `coral.hub.attempts.increment_eval_count` directly.
@@ -104,7 +104,6 @@ def _poll_until_graded(
     coral_dir: Path,
     commit_hash: str,
     timeout: float,
-    island_id: str | None = None,
 ) -> Attempt:
     """Poll the attempt file until status != 'pending' or timeout elapses.
 
@@ -112,7 +111,7 @@ def _poll_until_graded(
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        attempt = read_attempt(coral_dir, commit_hash, island_id=island_id)
+        attempt = read_attempt(coral_dir, commit_hash)
         if attempt is not None and attempt.status != "pending":
             return attempt
         time.sleep(_POLL_INTERVAL_SEC)
@@ -129,6 +128,7 @@ def submit_eval(
     wait: bool = True,
     poll_timeout: float | None = None,
     tune: bool = False,
+    final: bool = False,
 ) -> Attempt:
     """Stage changes, commit with message, write a pending attempt record.
 
@@ -140,8 +140,8 @@ def submit_eval(
 
     If ``tune`` is True, the attempt is marked as a tune-mode submission
     (``budget_class="tune"`` on its metadata). The grader still runs and the
-    score is recorded, but the manager will not count it toward the agent's
-    plateau / heartbeat budget — see issue #73.
+    score is recorded, but the manager will not route it into the
+    real-eval reflect_loop archive path.
 
     This is the core of `coral eval -m "description"` on the agent side.
     The grader itself runs asynchronously in `coral.grader.daemon`.
@@ -151,16 +151,25 @@ def submit_eval(
     breadcrumb = find_coral_breadcrumb(workdir_path)
     if breadcrumb is None:
         raise FileNotFoundError(f"No .coral directory found from {workdir_path}")
-    coral_dir, breadcrumb_dir = breadcrumb
+    coral_dir, _breadcrumb_dir = breadcrumb
 
     config_path = coral_dir / "config.yaml"
     if not config_path.exists():
         raise FileNotFoundError(f"No config.yaml found at {config_path}")
     config = CoralConfig.from_yaml(config_path)
-
-    # Determine the agent's island (if any) from the .coral_island breadcrumb
-    # adjacent to the .coral_dir breadcrumb we discovered above.
-    island_id = read_island_breadcrumb(coral_dir, breadcrumb_dir)
+    if final and tune:
+        raise RuntimeError("`coral eval --final` cannot be combined with `--tune`.")
+    if final and not config.evaluation.allow_loop_final:
+        raise RuntimeError(
+            "`coral eval --final` is disabled by default. L3 C-space is a sealed "
+            "final artifact for human/Codex review after the CORAL search loop. "
+            "Set evaluation.allow_loop_final=true only for trusted manual final "
+            "validation runs."
+        )
+    try:
+        eval_space = config.evaluation.score_space(final=final)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
 
     # Producer-side queue cap: refuse to commit when this agent already has
     # `max_pending_per_agent` ungraded submissions in flight. The grader is
@@ -168,9 +177,9 @@ def submit_eval(
     # arbitrarily many pending JSONs (issue #80). 0 = unlimited (legacy).
     pending_limit = config.grader.max_pending_per_agent
     if pending_limit > 0:
-        pending_count = count_agent_pending(coral_dir, agent_id, island_id=island_id)
+        pending_count = count_agent_pending(coral_dir, agent_id)
         if pending_count >= pending_limit:
-            oldest = agent_in_grader_queue(coral_dir, agent_id, island_id=island_id)
+            oldest = agent_in_grader_queue(coral_dir, agent_id)
             wait_hint = (
                 f"Run `coral wait {oldest.commit_hash[:12]}` to block on it "
                 f"before submitting again."
@@ -187,14 +196,12 @@ def submit_eval(
     parent_hash = _get_parent_hash(commit_hash, str(workdir_path))
 
     # Checkpoint shared state at submission time (captures agent's current notes/skills).
-    shared_state_hash = checkpoint(str(coral_dir), agent_id, message, island_id=island_id)
+    shared_state_hash = checkpoint(str(coral_dir), agent_id, message)
 
     # Look up parent attempt's shared state hash for provenance chain.
     parent_shared_state_hash = None
     if parent_hash:
-        from coral.hub._island import island_root
-
-        parent_attempt_file = island_root(coral_dir, island_id) / "attempts" / f"{parent_hash}.json"
+        parent_attempt_file = coral_dir / "public" / "attempts" / f"{parent_hash}.json"
         if parent_attempt_file.exists():
             try:
                 parent_data = json.loads(parent_attempt_file.read_text())
@@ -204,11 +211,14 @@ def submit_eval(
 
     # Write pending record. The grader daemon will observe this and fill in
     # score/status/feedback asynchronously.
-    metadata: dict = {}
+    metadata: dict = {
+        "eval_level": config.evaluation.level,
+        "eval_space": eval_space,
+    }
+    if final:
+        metadata["eval_final"] = True
     if tune:
         metadata["budget_class"] = BUDGET_CLASS_TUNE
-    if island_id is not None:
-        metadata["island_id"] = island_id
     attempt = Attempt(
         commit_hash=commit_hash,
         agent_id=agent_id,
@@ -222,7 +232,15 @@ def submit_eval(
         parent_shared_state_hash=parent_shared_state_hash,
         metadata=metadata,
     )
-    write_attempt(str(coral_dir), attempt, island_id=island_id)
+    _write_private_eval_request(
+        coral_dir,
+        commit_hash=commit_hash,
+        eval_level=config.evaluation.level,
+        eval_space=eval_space,
+        final=final,
+        tune=tune,
+    )
+    write_attempt(str(coral_dir), attempt)
 
     if not wait:
         return attempt
@@ -234,15 +252,45 @@ def submit_eval(
         # 2x the grader budget + 60s slack, with a floor of 300s for fast graders.
         poll_timeout = max(grader_timeout * 2 + 60, 300) if grader_timeout else 3600
 
-    final = _poll_until_graded(coral_dir, commit_hash, poll_timeout, island_id=island_id)
+    final = _poll_until_graded(coral_dir, commit_hash, poll_timeout)
 
     # Attach eval_count for display by cmd_eval (best-effort; daemon bumps this).
     try:
-        final._eval_count = read_eval_count(coral_dir, island_id=island_id)  # type: ignore[attr-defined]
+        final._eval_count = read_eval_count(coral_dir)  # type: ignore[attr-defined]
     except Exception:
         pass
 
     return final
+
+
+def _write_private_eval_request(
+    coral_dir: Path,
+    *,
+    commit_hash: str,
+    eval_level: str,
+    eval_space: str,
+    final: bool,
+    tune: bool,
+) -> None:
+    """Persist trusted submission routing outside public attempt JSON.
+
+    Attempt files are intentionally public shared state. The grader daemon must
+    not trust agent-editable attempt metadata for decisions like C-space final
+    routing, so the submit path also writes a private routing record.
+    """
+    private_dir = coral_dir / "private" / "eval_requests"
+    private_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "commit_hash": commit_hash,
+        "eval_level": eval_level,
+        "eval_space": eval_space,
+        "eval_final": bool(final),
+        "tune": bool(tune),
+    }
+    path = private_dir / f"{commit_hash}.json"
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    tmp.replace(path)
 
 
 # Backward-compat alias: older callers / hooks may still import `run_eval`.

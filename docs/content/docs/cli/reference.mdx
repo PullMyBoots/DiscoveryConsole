@@ -46,23 +46,37 @@ coral validate my-task
 
 ## Running Agents
 
-### `coral start`
+### `coral prepare`
 
-Launch autonomous agents on a task. Auto-wraps in tmux by default.
+Create a timestamp run, shared state, repo clone, and per-agent worktrees
+without launching agents.
 
 ```bash
-coral start -c <config> [options]
+coral prepare -c <task.yaml> [options]
+```
+
+```bash
+coral prepare -c task.yaml
+coral prepare -c task.yaml agents.count=4
+coral validate --run-dir results/<task>/latest/.coral
+```
+
+### `coral start`
+
+Launch autonomous agents from a prepared timestamp run. Auto-wraps in tmux by default.
+
+```bash
+coral start -c <run>/.coral/config.yaml [options]
 ```
 
 | Flag | Description |
 |------|-------------|
-| `-c, --config` | Path to task config YAML (required) |
+| `-c, --config` | Path to a prepared run's `.coral/config.yaml` (required) |
 | `key=value` | Optional config overrides, e.g. `agents.count=4`, `agents.model=opus`, `run.ui=true`, `run.session=local` |
 
 ```bash
-coral start -c task.yaml
-coral start -c task.yaml agents.count=4 agents.model=opus
-coral start -c task.yaml run.ui=true
+coral start -c results/<task>/latest/.coral/config.yaml
+coral start -c results/<task>/latest/.coral/config.yaml run.ui=true
 ```
 
 ### `coral resume`
@@ -79,7 +93,7 @@ coral resume [--task TASK] [--run RUN] [options]
 | `--run` | Run ID (defaults to latest) |
 | `-i, --instruction` | Additional instruction to inject into resumed agents |
 | `--instruction-file` | Read additional resume instruction from a file |
-| `key=value` | Optional config overrides, e.g. `agents.model=opus`, `run.verbose=true` |
+| `key=value` | Runtime-safe overrides only, e.g. `agents.model=opus`, `run.verbose=true` |
 
 ```bash
 coral resume
@@ -153,24 +167,24 @@ coral show <hash> [--task TASK] [--run RUN]
 coral show abc123
 ```
 
-### `coral notes`
+### `coral kb`
 
-List, search, or read agent notes.
+Query and maintain CORAL knowledge through a small index-first CLI.
 
 ```bash
-coral notes [options]
+coral kb index manual|external|practice [options]
+coral kb read <id>
+coral kb add external <source> --title "..." [--summary "..."]
+coral kb remove <src-id>
+coral kb note "short finding"
+coral kb notebook [--agent agent-1] [--set plan.md]
+coral kb archive <attempt-hash> --method-file method.md --reflection-file reflection.md
 ```
 
-| Flag | Description |
-|------|-------------|
-| `-s, --search QUERY` | Search notes by keyword |
-| `-n, --recent N` | Show N most recent |
-| `-r, --read ID` | Read a specific note by number or name |
-
 ```bash
-coral notes                    # List all
-coral notes --search "idea"    # Search
-coral notes --read 3           # Read note #3
+coral kb index manual
+coral kb index practice --by score
+coral kb read node-agent-1-0001
 ```
 
 ### `coral skills`
@@ -286,30 +300,4 @@ coral checkout <hash> [--workdir DIR]
 
 ```bash
 coral checkout abc123
-```
-
-### `coral heartbeat`
-
-View or modify per-agent heartbeat configuration.
-
-```bash
-coral heartbeat [subcommand] [options]
-```
-
-**Subcommands:**
-
-| Subcommand | Description |
-|-----------|-------------|
-| *(none)* | Show current heartbeat config |
-| `set NAME --every N [--global] [--prompt TEXT]` | Add or update an action |
-| `remove NAME` | Remove an action |
-| `reset` | Reset to task YAML defaults |
-
-```bash
-coral heartbeat                              # Show config
-coral heartbeat set reflect --every 3        # Reflect every 3 evals
-coral heartbeat set review --every 5 --prompt "Review alternatives"
-coral heartbeat set consolidate --every 5 --global  # Use global eval counter
-coral heartbeat remove consolidate           # Remove action
-coral heartbeat reset                        # Reset to defaults
 ```

@@ -28,7 +28,7 @@
 DiscoveryConsole 把三部分组合成一个工作流：
 
 - **科研控制台**：启动、暂停、恢复和观察多 agent 运行。
-- **Codex skill 工作流**：让 Codex 在启动前准备知识库、eval、baseline、agent/island 技术路线。
+- **Codex skill 工作流**：让 Codex 在启动前准备知识库、eval、baseline、agent 技术路线。
 - **基于 CORAL 的执行引擎**：隔离 agent worktree、运行 grader、记录 attempts、共享知识。
 
 理想流程是：
@@ -110,7 +110,7 @@ coral validate .
 - `knowledge/` 资料、笔记和 eval specification；
 - packaged grader 和 eval profiles；
 - baseline attempt 记录；
-- agent seed briefs 和 island themes；
+- 可运行的 agent 初始化包：路线方案、首轮 eval 脚本和路线知识包；
 - 资源和运行时间配置。
 
 ### 4. 打开控制台
@@ -135,7 +135,7 @@ CORAL execution engine
   ├─ grader daemon 和 eval queue
   ├─ timestamped run directories
   ├─ public knowledge 和 attempts
-  └─ 可选 multi-island search 和 migration
+  └─ 共享 public knowledge 和 attempts
 ```
 
 关键概念：
@@ -169,7 +169,7 @@ CORAL execution engine
 - 准备 knowledge skeleton；
 - 写入 eval progress；
 - 记录 baseline attempt；
-- 生成 agent 和 island briefs。
+- 生成 agent route briefs。
 
 详见 [codex-skill/README.md](codex-skill/README.md)。
 
@@ -177,7 +177,7 @@ CORAL execution engine
 
 DiscoveryConsole 基于 [CORAL](https://github.com/Human-Agent-Society/CORAL) 构建。CORAL 是 Apache-2.0 开源的自主多智能体编程和自我进化框架。
 
-本仓库包含经过改造的 CORAL 执行引擎，以及面向 Codex 的科研控制台和 skill 工作流。原始 CORAL 论文和项目仍然是执行模型的基础：隔离 worktree、共享状态、grader daemon、heartbeat、多 agent evolution。
+本仓库包含经过改造的 CORAL 执行引擎，以及面向 Codex 的科研控制台和 skill 工作流。原始 CORAL 论文和项目仍然是执行模型的基础：隔离 worktree、共享状态、grader daemon、eval 队列、多 agent evolution。
 
 如果你在研究中使用本项目，请引用底层 CORAL 引擎：
 

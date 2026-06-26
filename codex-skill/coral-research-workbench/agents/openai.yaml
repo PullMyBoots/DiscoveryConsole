@@ -1,4 +1,4 @@
 interface:
-  display_name: "DiscoveryConsole"
-  short_description: "Guide Codex-led human-in-the-loop research search."
-  default_prompt: "Use this skill to frame the research problem, design credible evals, prepare knowledge, baselines, and differentiated agent routes, then operate a DiscoveryConsole/CORAL workspace with the user in the review loop."
+  display_name: "CORAL Workbench"
+  short_description: "Guide Codex-led human-in-the-loop CORAL research search."
+  default_prompt: "Use this skill to frame the research problem, design credible evals, prepare knowledge, baselines, and differentiated agent routes, then operate a CORAL workspace with the user in the review loop."

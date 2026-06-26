@@ -33,7 +33,7 @@ DEFAULT_TUNE_DESCRIPTION = (
     "submission: scoring runs the full evaluation either way and "
     "returns the same score it would return without `--tune`. "
     "The flag's only effect is budget classification — tune "
-    "attempts do not count against the plateau / heartbeat budget."
+    "attempts do not enter the real-eval reflect archive."
 )
 
 
@@ -41,15 +41,14 @@ class TaskGrader(ABC):
     """Base class for task graders.
 
     Subclasses implement evaluate() and return a float or ScoreBundle.
-    The framework sets codebase_path, private_dir, config, args, tasks,
-    and island_id before calling.
+    The framework sets codebase_path, private_dir, config, args, and tasks
+    before calling.
     """
 
     codebase_path: str
     private_dir: str
     config: GraderConfig
     tasks: list[Task]
-    island_id: str | int | None
 
     def __init__(self, config: GraderConfig) -> None:
         self.config = config
@@ -76,6 +75,20 @@ class TaskGrader(ABC):
         return self.config.eval_version
 
     @property
+    def eval_level(self) -> str:
+        """Task evaluation topology level: L1, L2, or L3."""
+        if self.tasks:
+            return str(self.tasks[0].metadata.get("eval_level") or "").upper()
+        return ""
+
+    @property
+    def eval_space(self) -> str:
+        """Evaluation space used for this call: A, B, or C."""
+        if self.tasks:
+            return str(self.tasks[0].metadata.get("eval_space") or "").upper()
+        return ""
+
+    @property
     def profile_config(self) -> GraderProfileConfig | None:
         """Selected profile config, or None when no profile block is defined."""
         return self.config.profiles.get(self.profile)
@@ -93,6 +106,7 @@ class TaskGrader(ABC):
         return ResourceConfig(
             cpu_cores=override.cpu_cores or base.cpu_cores,
             memory_gb=override.memory_gb or base.memory_gb,
+            storage_gb=override.storage_gb or base.storage_gb,
             gpu_count=override.gpu_count or base.gpu_count,
             gpu_ids=override.gpu_ids or base.gpu_ids,
         )
@@ -140,7 +154,7 @@ class TaskGrader(ABC):
         Use this to switch your grader to a cheaper local target — a smaller
         eval slice, dev split, or smoke harness — when the agent is sweeping
         hyperparameters rather than making a real submission. Tune-mode
-        attempts don't count against the plateau / heartbeat budget.
+        attempts do not enter the real-eval reflect archive.
         """
         return self.budget_class == BUDGET_CLASS_TUNE
 
@@ -163,26 +177,12 @@ class TaskGrader(ABC):
         subprocess logs, terminal recordings, traces, etc. the agent should
         be able to inspect after the eval finishes.
 
-        Path (single-island): .coral/public/eval_logs/<checkout_dir_name>/
-        Path (multi-island):  .coral/islands/<island_id>/eval_logs/<checkout_dir_name>/
-        (= attempt commit hash when invoked by the grader daemon)
-
-        Symlinked into each agent worktree at `<worktree>/.claude/eval_logs/`
-        by setup_shared_state, so the multi-island branch keeps eval logs
-        island-scoped (consistent with attempts/skills/notes/etc.).
+        Path: .coral/public/eval_logs/<checkout_dir_name>/ (= attempt commit
+        hash when invoked by the grader daemon). Symlinked into each agent
+        worktree by setup_shared_state.
         """
         coral_root = Path(self.private_dir).parent
-        island_id = getattr(self, "island_id", None)
-        if island_id is not None:
-            d = (
-                coral_root
-                / "islands"
-                / str(island_id)
-                / "eval_logs"
-                / Path(self.codebase_path).name
-            )
-        else:
-            d = coral_root / "public" / "eval_logs" / Path(self.codebase_path).name
+        d = coral_root / "public" / "eval_logs" / Path(self.codebase_path).name
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -344,7 +344,129 @@ class TaskGrader(ABC):
 
     def fail(self, explanation: str = "", feedback: str | None = None) -> ScoreBundle:
         """Return a bundle with a null score (evaluation failed)."""
-        return self.bundle(None, explanation, feedback=feedback)
+        return self.fail_report(error_message=explanation, feedback=feedback)
+
+    def report_score(
+        self,
+        value: float | None,
+        *,
+        explanation: str = "",
+        accepted: bool | None = None,
+        acceptance: dict[str, Any] | None = None,
+        metrics: dict[str, Score | dict[str, Any] | float | int | None] | None = None,
+        feedback: str | None = None,
+        message_for_agent: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> ScoreBundle:
+        """Return a scored bundle with the standard CORAL eval_report schema.
+
+        Graders should use this when they can expose structured metric values.
+        CORAL's daemon later augments ``metadata["eval_report"]`` with rank,
+        top-k, self-history, and baseline comparisons that only the run ledger
+        can know.
+        """
+        report_metrics: dict[str, dict[str, Any]] = {}
+        scores: dict[str, Score] = {
+            "eval": Score(value=value, name="eval", explanation=explanation or None)
+        }
+
+        for name, raw in (metrics or {}).items():
+            key = str(name)
+            if isinstance(raw, Score):
+                score = raw
+                scores[key] = score
+                metric_payload = {
+                    "value": score.value,
+                    "direction": score.metadata.get("direction", self.config.direction),
+                }
+                if score.explanation:
+                    metric_payload["explanation"] = score.explanation
+                for meta_key, meta_value in score.metadata.items():
+                    metric_payload.setdefault(meta_key, meta_value)
+            elif isinstance(raw, dict):
+                metric_payload = dict(raw)
+                metric_value = metric_payload.get("value")
+                metric_explanation = metric_payload.get("explanation")
+                score_metadata = {
+                    k: v
+                    for k, v in metric_payload.items()
+                    if k not in {"value", "name", "explanation"}
+                }
+                scores[key] = Score(
+                    value=metric_value,
+                    name=str(metric_payload.get("name") or key),
+                    explanation=str(metric_explanation) if metric_explanation else None,
+                    metadata=score_metadata,
+                )
+                metric_payload.setdefault("direction", score_metadata.get("direction", self.config.direction))
+            else:
+                scores[key] = Score(value=raw, name=key)
+                metric_payload = {
+                    "value": raw,
+                    "direction": self.config.direction,
+                }
+            report_metrics[key] = metric_payload
+
+        report: dict[str, Any] = {
+            "status": "success",
+            "eval_level": self.eval_level,
+            "eval_space": self.eval_space,
+            "eval_profile": self.profile,
+            "accepted": bool(value is not None) if accepted is None else bool(accepted),
+            "score": {
+                "total": value,
+                "direction": self.config.direction,
+            },
+            "metrics": report_metrics,
+        }
+        if acceptance is not None:
+            report["acceptance"] = acceptance
+        if message_for_agent:
+            report["message_for_agent"] = message_for_agent
+
+        final_metadata = dict(metadata or {})
+        final_metadata["eval_report"] = report
+        return ScoreBundle(
+            scores=scores,
+            aggregated=value,
+            feedback=feedback,
+            metadata=final_metadata,
+        )
+
+    def fail_report(
+        self,
+        *,
+        error_message: str,
+        error_type: str = "runtime_error",
+        stage: str = "evaluate",
+        log_path: str | None = None,
+        feedback: str | None = None,
+        message_for_agent: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> ScoreBundle:
+        """Return a failed bundle with the standard CORAL eval_report schema."""
+        report: dict[str, Any] = {
+            "status": "failed",
+            "eval_level": self.eval_level,
+            "eval_space": self.eval_space,
+            "eval_profile": self.profile,
+            "error_type": error_type,
+            "error_message": error_message,
+            "stage": stage,
+        }
+        if log_path:
+            report["log_path"] = log_path
+        if message_for_agent:
+            report["message_for_agent"] = message_for_agent
+
+        final_metadata = dict(metadata or {})
+        final_metadata["eval_report"] = report
+        return self.bundle(
+            None,
+            error_message,
+            feedback=feedback or error_message,
+            metadata=final_metadata,
+        )
 
     def bundle(
         self,
@@ -381,14 +503,9 @@ class TaskGrader(ABC):
         agent learns the per-grader tune contract from the eval result itself
         — no startup RPC, no CORAL.md plumbing.
 
-        ``island_id`` is threaded through ``**kwargs`` so legacy grader
-        signatures still work; we pop it explicitly so it's visible on
-        ``self.island_id`` for graders that need to scope hub reads
-        (e.g. ``read_attempts(coral_dir, island_id=self.island_id)``).
         """
         self.codebase_path = codebase_path
         self.tasks = tasks
-        self.island_id = kwargs.pop("island_id", None)
         resource_env = self.resource_env()
         for task in self.tasks:
             task.metadata.setdefault("eval_version", self.eval_version)
@@ -425,6 +542,12 @@ class TaskGrader(ABC):
     def _annotate_eval_context(self, bundle: ScoreBundle) -> ScoreBundle:
         bundle.metadata.setdefault("eval_version", self.eval_version)
         bundle.metadata.setdefault("eval_profile", self.profile)
+        if self.eval_level:
+            bundle.metadata.setdefault("eval_level", self.eval_level)
+        if self.eval_space:
+            bundle.metadata.setdefault("eval_space", self.eval_space)
+            if self.eval_space == "C":
+                bundle.metadata.setdefault("eval_final", True)
         bundle.metadata.setdefault("resources", self.resources.to_env())
         return bundle
 

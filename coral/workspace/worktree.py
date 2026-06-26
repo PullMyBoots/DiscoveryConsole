@@ -100,11 +100,14 @@ def setup_gitignore(worktree_path: Path) -> None:
     """Write .gitignore to exclude CORAL-managed files from git."""
     gitignore_path = worktree_path / ".gitignore"
     entries = {
+        ".coral/",
         ".coral_agent_id",
         ".coral_dir",
-        ".coral_island",
         "CLAUDE.md",
         "AGENTS.md",
+        "CORAL_OVERVIEW.md",
+        "CORAL_LOOPS.md",
+        "CORAL_SHARED",
         ".claude/",
         ".codex/",
         ".cursor/",
@@ -151,28 +154,18 @@ def setup_shared_state(
     worktree_path: Path,
     coral_dir: Path,
     shared_dir_name: str = ".claude",
-    island_id: str | int | None = None,
 ) -> None:
-    """Create a shared state directory in the worktree with symlinks into the island root.
+    """Create a shared state directory in the worktree.
 
-    Symlinks notes, skills, attempts, etc. from the per-island state root into
-    the shared directory so agents can read/write shared state. In single-island
-    mode (``island_id is None``) the target is ``coral_dir/public/*``; in
-    multi-island mode it is ``coral_dir/islands/<id>/*``.
-
-    When ``island_id`` is provided, also writes a ``.coral_island`` breadcrumb
-    in the worktree so ``coral eval`` and other CLI commands can determine which
-    island this agent belongs to without rescanning configuration.
+    Symlinks skills, attempts, knowledge, etc. from ``coral_dir/public`` into the
+    shared directory so agents can read/write shared run state.
 
     Args:
         worktree_path: Path to the agent's git worktree
         coral_dir: Path to the shared .coral directory
         shared_dir_name: Name of the shared dir in the worktree (e.g. ".claude")
-        island_id: The agent's island id (str/int), or None for single-island mode.
     """
-    from coral.hub._island import island_root
-
-    state_root = island_root(coral_dir, island_id)
+    state_root = coral_dir / "public"
     shared_dir = worktree_path / shared_dir_name
 
     # Self-heal old-style absolute symlink to .coral/public/.
@@ -186,7 +179,7 @@ def setup_shared_state(
         src.mkdir(parents=True, exist_ok=True)
         dst = shared_dir / item
         # If a previous (buggy) run wrote into a real local dir at this path
-        # instead of a symlink, migrate any files into the shared dir then
+        # instead of a symlink, move any files into the shared dir then
         # replace the local dir with a symlink.
         if dst.exists() and not dst.is_symlink() and dst.is_dir():
             src.mkdir(parents=True, exist_ok=True)
@@ -205,94 +198,41 @@ def setup_shared_state(
             except (ValueError, OSError):
                 dst.symlink_to(src.resolve())
 
-    # Write the .coral_island breadcrumb when on an island. Single-island
-    # callers (no island_id) deliberately do NOT get this file — its absence
-    # is how downstream code (submit_eval, monitor_loop) distinguishes modes.
-    if island_id is not None:
-        (worktree_path / ".coral_island").write_text(str(island_id))
+
+def setup_instruction_links(worktree_path: Path, shared_dir_name: str) -> None:
+    """Expose reusable public instructions at stable worktree-root paths."""
+    links = {
+        "CORAL_SHARED": Path(shared_dir_name),
+        "CORAL_OVERVIEW.md": Path(shared_dir_name)
+        / "knowledge"
+        / "manuals"
+        / "coral-overview-cli.md",
+        "CORAL_LOOPS.md": Path(shared_dir_name) / "knowledge" / "manuals" / "agent-loops.md",
+    }
+    for name, target in links.items():
+        dst = worktree_path / name
+        if dst.is_symlink():
+            dst.unlink()
+        elif dst.exists():
+            # CORAL owns these filenames only when they are symlinks. Preserve
+            # unexpected user files instead of overwriting them.
+            continue
+        dst.symlink_to(target)
 
 
 # Items inside the shared dir that are agent-facing symlinks into the
-# island state root. Kept in module scope so :func:`setup_shared_state`
-# and :func:`repoint_shared_state` stay in sync.
+# public state root.
 _SHARED_STATE_ITEMS: tuple[str, ...] = (
     "knowledge",
-    "notes",
     "skills",
     "agents",
     "attempts",
     "logs",
-    "heartbeat",
-    "roles",
     "eval_logs",
+    "jobs",
+    "datasets",
+    "control",
 )
-
-
-def repoint_shared_state(
-    worktree_path: Path,
-    coral_dir: Path,
-    shared_dir_name: str,
-    new_island_id: str | int,
-) -> None:
-    """Repoint an agent's shared-state symlinks at a different island.
-
-    Used by migration: the agent's worktree was originally wired to
-    ``coral_dir/islands/<src>/*``; after migration the same shared dir
-    (`.claude/`, `.codex/`, ...) needs to surface the destination
-    island's notes / attempts / etc. instead. We unlink each item
-    symlink unconditionally and recreate it against the new island root,
-    then rewrite the ``.coral_island`` breadcrumb so the next
-    ``coral eval`` from this worktree submits to the right place.
-
-    ``setup_shared_state`` on its own won't do this: it short-circuits
-    when ``dst.exists()`` is True, and a symlink to the still-existing
-    old island satisfies ``exists()``.
-
-    Raises:
-        ValueError: if ``new_island_id`` is None or fails island_root
-            validation (path separators, etc.).
-    """
-    from coral.hub._island import island_root
-
-    if new_island_id is None:
-        raise ValueError("repoint_shared_state requires a non-None new_island_id")
-
-    state_root = island_root(coral_dir, new_island_id)
-    shared_dir = worktree_path / shared_dir_name
-    shared_dir.mkdir(exist_ok=True)
-
-    for item in _SHARED_STATE_ITEMS:
-        src = state_root / item
-        dst = shared_dir / item
-        # Ensure the new island has the directory the symlink will point at
-        # (creating it lazily here keeps repoint idempotent even when the
-        # destination island hasn't seen any agent activity yet).
-        src.mkdir(parents=True, exist_ok=True)
-
-        if dst.is_symlink():
-            dst.unlink()
-        elif dst.exists() and dst.is_dir():
-            # Local dir at this path (shouldn't happen in normal runs, but
-            # the original setup_shared_state self-heals this case so we
-            # match): move any contents into the new state root, then drop
-            # the local dir so we can replace it with a symlink.
-            for entry in dst.iterdir():
-                target = src / entry.name
-                if not target.exists():
-                    shutil.move(str(entry), str(target))
-            try:
-                dst.rmdir()
-            except OSError:
-                logger.warning(f"repoint_shared_state: could not remove non-empty local dir {dst}")
-                continue
-
-        try:
-            rel = os.path.relpath(src.resolve(), shared_dir.resolve())
-            dst.symlink_to(rel)
-        except (ValueError, OSError):
-            dst.symlink_to(src.resolve())
-
-    (worktree_path / ".coral_island").write_text(str(new_island_id))
 
 
 def apply_runtime_mounts(
@@ -370,7 +310,6 @@ def setup_claude_settings(
     research: bool = True,
     gateway_url: str | None = None,
     gateway_api_key: str | None = None,
-    island_id: str | int | None = None,
 ) -> None:
     """Write Claude Code settings.json with permissions and gateway env.
 
@@ -379,18 +318,13 @@ def setup_claude_settings(
     ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY in the settings ``env`` so
     they override the user's global ``~/.claude/settings.json``.
 
-    In multi-island runs (``island_id`` set), Read scopes only to the
-    agent's own island root (``.coral/islands/<id>/``) — sibling islands
-    are off-limits. In single-island mode (``island_id is None``), scopes
-    to ``.coral/public/``.
+    Read scopes to ``.coral/public/``.
     """
-    from coral.hub._island import island_root
-
     claude_dir = worktree_path / ".claude"
     claude_dir.mkdir(exist_ok=True)
 
     private_dir = str(coral_dir.resolve() / "private")
-    state_root_resolved = island_root(coral_dir, island_id).resolve()
+    state_root_resolved = (coral_dir / "public").resolve()
     agents_dir = str(state_root_resolved / "agents")
     worktree_str = str(worktree_path.resolve())
     private_pattern = f"{private_dir}/**"
@@ -416,6 +350,8 @@ def setup_claude_settings(
     # already restrict them to the agent's own worktree.
     deny_rules: list[str] = [
         "Bash(git *)",
+        f"Bash(*{private_dir}*)",
+        "Bash(*.coral/private*)",
         f"Read(/{private_pattern})",
         # Tools that block on human approval — there is no human in the
         # loop in CORAL. Leaving them enabled causes the agent to stall
@@ -466,26 +402,21 @@ def setup_opencode_settings(
     research: bool = True,
     gateway_url: str | None = None,
     gateway_api_key: str | None = None,
-    island_id: str | int | None = None,
 ) -> None:
     """Write OpenCode opencode.json with scoped permissions.
 
-    Allows access to the agent's worktree and shared island state,
-    but denies access to .coral/private/ (grader data, answer keys).
+    Allows access to the agent's worktree and shared public state, but denies
+    access to .coral/private/ (grader data, answer keys).
     When a gateway is configured, patches the provider's baseURL so
     agent traffic routes through the LiteLLM proxy.
 
-    In multi-island runs the ``external_directory`` allow scopes to the
-    agent's island root only; in single-island mode it scopes to
-    ``.coral/public/``.
+    The ``external_directory`` allow scopes to ``.coral/public/``.
     """
-    from coral.hub._island import island_root
-
     opencode_dir = worktree_path / ".opencode"
     opencode_dir.mkdir(exist_ok=True)
 
     private_pattern = str(coral_dir.resolve() / "private") + "/**"
-    state_root_pattern = str(island_root(coral_dir, island_id).resolve()) + "/**"
+    state_root_pattern = str((coral_dir / "public").resolve()) + "/**"
 
     settings: dict = {
         "$schema": "https://opencode.ai/config.json",
@@ -540,7 +471,6 @@ def setup_codex_settings(
     research: bool = True,
     gateway_url: str | None = None,
     gateway_api_key: str | None = None,
-    island_id: str | int | None = None,  # noqa: ARG001
 ) -> None:
     """Write Codex CLI config.toml with sandbox, approval, and web search settings.
 
@@ -557,7 +487,7 @@ def setup_codex_settings(
     lines = [
         'model = "gpt-5.4"',
         'approval_policy = "never"',
-        'sandbox_mode = "danger-full-access"',
+        'sandbox_mode = "workspace-write"',
         'personality = "pragmatic"',
         f'web_search = "{web_search}"',
     ]
@@ -571,6 +501,16 @@ def setup_codex_settings(
             'wire_api = "responses"',
             'env_key = "OPENAI_API_KEY"',
         ]
+
+    lines += [
+        "",
+        "[sandbox_workspace_write]",
+        "writable_roots = [",
+        f'  "{worktree_path.resolve()}",',
+        f'  "{(coral_dir / "public").resolve()}",',
+        "]",
+        "network_access = true",
+    ]
 
     config_toml = "\n".join(lines) + "\n"
 
@@ -588,7 +528,6 @@ def setup_cursor_settings(
     # The kwargs are accepted so the manager dispatch can stay uniform.
     gateway_url: str | None = None,  # noqa: ARG001
     gateway_api_key: str | None = None,  # noqa: ARG001
-    island_id: str | int | None = None,  # noqa: ARG001
 ) -> None:
     """Write `.cursor/rules/coral.mdc` with always-apply CORAL guardrails.
 
@@ -611,7 +550,7 @@ def setup_cursor_settings(
         '- Use `coral eval -m "<short description>"` to stage, commit, and grade your work — never bare `git commit`.',
         "- Read the full task brief in `AGENTS.md` at the workspace root.",
         f"- Do not read or modify anything under `{private_dir}/` (grader internals, answer keys).",
-        "- Share findings through `.cursor/notes/` and reusable tools through `.cursor/skills/` so other agents benefit.",
+        "- Share findings with `coral kb note/notebook/archive` and reusable tools through `.cursor/skills/` so other agents benefit.",
     ]
     if not research:
         body_lines.append("- Web search and web fetch are disabled for this run.")

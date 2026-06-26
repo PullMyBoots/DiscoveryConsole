@@ -344,7 +344,7 @@ a:hover{color:var(--link-h)}
       In studying this regime, we encountered a recurring and surprising pattern. Advanced agents often achieve higher ceilings when given more autonomy and less rigid structure. Compared to tightly constrained evolutionary setups such as <a href="https://deepmind.google/discover/blog/alphaevolve-a-gemini-powered-coding-agent-for-designing-advanced-algorithms/">AlphaEvolve</a> and <a href="https://github.com/algorithmicsuperintelligence/openevolve">OpenEvolve</a>, we found that agents given greater autonomy to explore, reflect, and iterate often improve faster, reach stronger limits, and succeed more frequently. For example, on the <a href="https://en.wikipedia.org/wiki/Minimum_overlap_problem">Erdős Min Overlap problem</a>, using the same backbone model, Opus 4.6 without internet access, our autonomous setup achieves a 2.5× higher improved attempt rate than OpenEvolve, reaches 99% of state of the art performance roughly 10× faster with 7× fewer evaluation calls, and ultimately attains a better final score.
     </p>
     <p>
-      This observation pushed us to build <strong><span style="color:#E8A09A">CORAL</span></strong>, an infrastructure for robust autonomous evolution. <strong><span style="color:#E8A09A">CORAL</span></strong> is designed to let agents fully leverage their autonomy while remaining reliable over long running searches. It provides isolated workspaces and separated evaluation to prevent reward hacking, session storage with automatic resume for sustained runs, a heartbeat mechanism for reflection and knowledge accumulation, infrastructure to support multi-agent evolution, and flexible task interfaces for any domain where candidate solutions can be generated and compared.
+      This observation pushed us to build <strong><span style="color:#E8A09A">CORAL</span></strong>, an infrastructure for robust autonomous evolution. <strong><span style="color:#E8A09A">CORAL</span></strong> is designed to let agents fully leverage their autonomy while remaining reliable over long running searches. It provides isolated workspaces and separated evaluation to prevent reward hacking, session storage with automatic resume for sustained runs, eval-feedback-driven reflection, indexed knowledge sharing, infrastructure to support multi-agent evolution, and flexible task interfaces for any domain where candidate solutions can be generated and compared.
     </p>
     <p>
       Once <strong><span style="color:#E8A09A">CORAL</span></strong> was in place, we were able to go beyond single agent evolution and study multi-agent evolution. What we found was even more striking. While a single autonomous agent can already outperform strong state of the art baselines, a population of agents can push performance substantially further. On Anthropic's take-home task for a kernel engineer role, again without internet access, a single agent improved the state of the art from 1,363 cycles to 1,350, while a population of four agents pushed it dramatically further to 1,103.
@@ -410,7 +410,7 @@ a:hover{color:var(--link-h)}
       </div>
     </div>
     <div class="fig-cap">
-      <strong>Figure 1.</strong> The <strong><span style="color:#E8A09A">CORAL</span></strong> orchestration pipeline. Tasks and evaluations define the optimization problem. The Manager Infra handles the agent lifecycle. Isolated agents explore in parallel, connected through shared knowledge (attempts, notes, skills). A periodic heartbeat keeps agents reflective and productive.
+      <strong>Figure 1.</strong> The <strong><span style="color:#E8A09A">CORAL</span></strong> orchestration pipeline. Tasks and evaluations define the optimization problem. The Manager Infra handles the agent lifecycle. Isolated agents explore in parallel, connected through shared knowledge (attempts, practice knowledge, skills). Rich eval feedback and indexed archives keep agents reflective and productive.
     </div>
 
     <h2 id="system-overview">System Overview</h2>
@@ -432,12 +432,12 @@ a:hover{color:var(--link-h)}
       <li><strong>Shared Knowledge.</strong> Agents learn not only from their own trajectories, but also from a common knowledge layer consisting of:
         <ul>
           <li><strong>Attempts:</strong> prior evaluated experiments, along with their scores and feedback</li>
-          <li><strong>Notes:</strong> observations and advice that help agents avoid dead ends and build on useful discoveries</li>
+          <li><strong>Practice knowledge:</strong> eval-linked method summaries, reflections, and route archives that help agents avoid dead ends and build on useful discoveries</li>
           <li><strong>Skills:</strong> reusable tools and strategies packaged for later use</li>
         </ul>
         <strong><span style="color:#E8A09A">CORAL</span></strong> provides APIs that allow agents to efficiently browse, retrieve, and contribute to this shared knowledge base.
       </li>
-      <li><strong>Heartbeat.</strong> A controllable heartbeat periodically interrupts agents to reflect, clean up context, and externalize useful discoveries. This step is critical for building shared knowledge: in practice, we observe that without such a mechanism, agents often become overly fixated on their current line of work and fail to pause, reflect, and share what they have learned with others.</li>
+      <li><strong>Feedback and reflection loops.</strong> Evaluation reports include score, rank, self-history, baselines, metric breakdowns, and failure traces. Successful real evals route agents into a reflection/archive loop, where they turn useful discoveries into indexed practice knowledge.</li>
     </ol>
 
     <h2 id="experiments">Experiments</h2>
@@ -596,7 +596,7 @@ a:hover{color:var(--link-h)}
     <p>
       If single agents can evolve, organized <strong>populations of agents</strong> hold great promise to become even more powerful as evidenced by our experiments on the Anthropic take-home task. In our experiments, single agents often became stuck, whereas multiple agents were better able to explore diverse options. But such horizontal scaling raises many open questions: What is the right organizational size? How should agents communicate, how often, and at what level of abstraction? What information should be shared, and what should be retained by each agent? These are not just engineering choices, but organizational principles for machine intelligence.
     </p>
-    <p>Additionally, we observe that without the heartbeat mechanism, agents become significantly less effective at sharing information and contributing reusable skills to one another. This suggests that training agents to natively operate and thrive in multi-agent settings may be an especially exciting frontier for future research.</p>
+    <p>Additionally, we observe that agents benefit when evaluation feedback and shared-memory tools make useful discoveries easy to archive and retrieve. This suggests that training agents to natively operate and thrive in multi-agent settings may be an especially exciting frontier for future research.</p>
     <p><strong>Key Enablers:</strong> Effective role delegation · Communication mechanisms · Curation and growth of shared memory and transferable skills</p>
     <p><strong>Exemplary initial attempts:</strong> <a href="https://github.com/mutable-state-inc/autoresearch-at-home">mutable-state-inc/autoresearch-at-home</a> · <a href="#kernel">our Anthropic Performance Take-Home experiments</a></p>
 

@@ -1,16 +1,16 @@
-# DiscoveryConsole Codex Skill
+# CORAL Codex Skill
 
-This directory packages the Codex-facing workflow for DiscoveryConsole. The
+This directory packages the Codex-facing workflow for CORAL. The
 skill teaches Codex how to act as the user's research operator: frame the
 problem, design trustworthy evals, prepare knowledge and baselines, generate
-agent routes, and operate CORAL as the execution engine.
+runnable agent initialization bundles, and operate CORAL as the execution engine.
 
 The skill does not replace the CLI. It is the human/Codex/CORAL collaboration
 layer.
 
 ## Install Locally
 
-From the DiscoveryConsole repository root:
+From the CORAL repository root:
 
 ```bash
 mkdir -p "$HOME/.codex/skills"
@@ -33,8 +33,8 @@ python "$HOME/.codex/skills/coral-research-workbench/scripts/check_coral_install
 - Eval design guidance for breakthrough metrics, guardrails, anti-cheating,
   overfitting, profiles, and score credibility.
 - Workspace, knowledge, baseline, agent-plan, and control-panel contracts.
-- Scripts for availability checks, knowledge skeletons, agent/island plan
-  briefs, baseline records, and eval progress.
+- Scripts for availability checks, knowledge skeletons, runnable agent
+  initialization bundles, baseline records, and eval progress.
 - A two-loop workflow where CORAL performs inner search and the user plus Codex
   perform outer review, steering, knowledge promotion, and timestamp forking.
 

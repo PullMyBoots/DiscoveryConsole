@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 _TEMPLATE_PATH = Path(__file__).parent / "templates" / "judge.md.template"
 
-_MAX_AGENT_NOTES_CHARS = 20_000
+_MAX_PRACTICE_CONTEXT_CHARS = 20_000
 
 
 def generate_judge_md(
@@ -34,7 +34,7 @@ def generate_judge_md(
         scratch_dir: Absolute path to the judge's scratch directory.
         files: Optional list of expected output file names (relative to ``./codebase/``).
         reference_context: Pre-read reference documents text.
-        codebase_path: Absolute path to the agent's worktree (for reading notes).
+        codebase_path: Absolute path to the agent's worktree (for reading practice knowledge).
     """
     template = _TEMPLATE_PATH.read_text()
 
@@ -72,9 +72,11 @@ def generate_judge_md(
     else:
         reference_section = "No reference documents provided."
 
-    # Build agent notes context
+    # Build agent practice-knowledge context
     agent_notes_context = (
-        _read_agent_notes(codebase_path) if codebase_path else "No agent notes available."
+        _read_agent_practice_knowledge(codebase_path)
+        if codebase_path
+        else "No practice knowledge available."
     )
 
     # Build all-pass context
@@ -165,50 +167,53 @@ def _read_runtime_guidance(codebase_path: str) -> str:
     return ""
 
 
-def _read_agent_notes(codebase_path: str) -> str:
-    """Read agent notes from the worktree's shared notes directory."""
+def _read_agent_practice_knowledge(codebase_path: str) -> str:
+    """Read eval-linked practice knowledge from the worktree's shared directory."""
     if not codebase_path:
-        return "No agent notes available."
+        return "No practice knowledge available."
 
-    notes_dir = None
-    for shared_dir in [".claude", ".opencode"]:
-        candidate = Path(codebase_path) / shared_dir / "notes"
+    practice_dir = None
+    for shared_dir in [".claude", ".codex", ".opencode", ".cursor", ".kiro"]:
+        candidate = Path(codebase_path) / shared_dir / "knowledge" / "practice"
         if candidate.is_dir():
-            notes_dir = candidate
+            practice_dir = candidate
             break
 
-    if notes_dir is None:
-        return "No agent notes available."
+    if practice_dir is None:
+        return "No practice knowledge available."
 
-    note_files = sorted(notes_dir.glob("*.md"))
-    if not note_files:
-        return "No agent notes available."
+    practice_files = sorted(practice_dir.glob("agents/*/chain/*.md"))
+    if not practice_files:
+        return "No practice knowledge available."
 
     parts = []
     total_chars = 0
-    for note_path in note_files:
+    for practice_path in practice_files:
         try:
-            content = note_path.read_text()
+            content = practice_path.read_text()
         except OSError:
             continue
 
-        if total_chars + len(content) > _MAX_AGENT_NOTES_CHARS:
-            remaining = _MAX_AGENT_NOTES_CHARS - total_chars
+        if total_chars + len(content) > _MAX_PRACTICE_CONTEXT_CHARS:
+            remaining = _MAX_PRACTICE_CONTEXT_CHARS - total_chars
             if remaining > 200:
                 content = content[:remaining] + "\n\n[... truncated ...]"
             else:
-                parts.append(f"\n[... {len(note_files) - len(parts)} more notes truncated ...]")
+                parts.append(
+                    f"\n[... {len(practice_files) - len(parts)} more practice nodes truncated ...]"
+                )
                 break
 
-        parts.append(f"### {note_path.name}\n\n{content}")
+        rel = practice_path.relative_to(practice_dir)
+        parts.append(f"### {rel}\n\n{content}")
         total_chars += len(content)
 
     if not parts:
-        return "No agent notes available."
+        return "No practice knowledge available."
 
     return (
-        "The agent wrote the following notes about its findings and approach. "
-        "Consider these when evolving the rubric — the agent may have discovered "
+        "The agent archived the following eval-linked practice knowledge. "
+        "Consider this when evolving the rubric — the agent may have discovered "
         "quality dimensions or concerns not yet captured in the criteria.\n\n"
         + "\n\n".join(parts)
     )

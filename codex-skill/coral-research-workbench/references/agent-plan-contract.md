@@ -1,118 +1,84 @@
 # Agent Plan Contract
 
-Use this reference before changing agent initialization, island topology, or migration behavior.
+Use this reference before changing agent initialization or route planning behavior.
 
 ## Ownership
 
-Codex owns the concrete agent plan. The user should inspect the plan and request regeneration if it looks wrong, but should not normally hand-edit individual seed briefs in the dashboard.
+Codex owns the concrete agent initialization bundle. The user should inspect it
+and request regeneration if it looks wrong, but should not normally hand-edit
+individual initialization plans or first-eval scripts in the dashboard.
 
-## Single-Island Mode
+## Route Plan
 
-Single-island mode means multiple agents search the same shared problem space and can benefit from shared attempts, notes, skills, and heartbeat summaries.
+CORAL runs multiple agents against one shared public state space. Diversity
+comes from initial technical routes and the eval feedback they produce.
 
-Use it when:
+Use multiple routes when:
 
-- the problem is narrow,
-- there is one dominant eval,
-- method families are not clearly separable,
-- or the budget is small.
-
-Still differentiate the agents. Do not spawn five agents with the same starting method.
-
-## Multi-Island Mode
-
-Multi-island mode separates exploration into semi-independent groups. Each island should have a distinct theme or method family. Migration copies promising results or knowledge between islands at controlled intervals.
-
-Use it when:
-
-- there are multiple plausible method families,
-- the search space is broad,
+- there are several plausible method families,
 - premature convergence is a risk,
-- or the user wants parallel research cultures.
+- the eval has meaningful component metrics,
+- or the user wants broad technical exploration.
 
-A multi-island run needs at least one planned agent per island. Never configure more islands than agents.
+Still differentiate the agents. Do not spawn several agents with the same
+starting method.
 
-## Agent Briefs
+## Agent Initialization Bundles
 
-Store agent seed briefs under:
+Store runnable agent initialization plans and first-eval scripts under:
 
 ```text
 knowledge/briefs/agent-seeds/
 ```
 
-Each brief should include:
+Each agent must have:
+
+- `knowledge/briefs/agent-seeds/<agent-id>.md`
+- `knowledge/briefs/agent-seeds/<agent-id>.eval.sh`
+
+Each markdown plan should include:
 
 - title
-- island ID when applicable
 - starting hypothesis or technical direction
-- what to inspect first
-- what to try first
+- knowledge lookup instructions using `coral kb index ...`
+- what to try first as a runnable implementation or diagnostic
+- the path to the first-eval script
 - what to avoid
 - expected eval profile
 - any guardrail concern
+- how the agent should evolve the route from eval feedback
 
-Keep briefs short enough to be injected into the agent context without becoming a paper.
+Keep plans short enough to be injected into the agent context without becoming a
+paper. They are starting technical plans.
 
-## Knowledge Packets
+Each first-eval script must be executable and must submit an official CORAL eval,
+normally by calling `coral eval -m "<message>"`. It should not edit code itself.
+Its job is to give the agent a concrete launch rail: apply the first
+route-specific change, then run the script to get score evidence.
 
-Store per-agent knowledge packets under:
+## Knowledge Access
 
-```text
-knowledge/packs/<agent-id>.md
-```
+Agents access knowledge through:
 
-Packets are the lightweight memory entry point for agents. They should not copy
-paper summaries, repo walkthroughs, or long notes. Instead, each packet should
-name the few capsules and indexes that are relevant to that agent's route:
+- `coral kb index manual`
+- `coral kb index external`
+- `coral kb index practice --by score|route|agent|metric`
+- `coral kb read <id>`
+- `coral kb note "..."`
+- `coral kb archive --attempt <hash>`
 
-- route hypothesis
-- `eval_spec.md`, `maps/methods.md`, and `notes/index.md`
-- must-read capsule paths
-- optional capsule paths
-- eval targets the route is meant to improve or protect
-- raw-source rule: open `sources/` only for a concrete decision
-
-If a route needs substantial background, create a capsule and link it from the
-packet. Do not make agents discover the same large source independently.
-
-## Island Themes
-
-Store island themes under:
-
-```text
-knowledge/briefs/islands/
-```
-
-Each theme should state:
-
-- method family or search posture
-- what kind of attempts the island should favor
-- what evidence would count as progress
-- what risks the island should watch for
-
-This is not roleplay. Avoid generic personas such as "researcher" or "engineer" unless the role changes the technical search strategy.
-
-## Migration
-
-Treat migration as copy/inspiration, not ownership transfer. A migrated result should let another island inspect, adapt, or challenge it while the source island remains intact.
-
-Typical policy:
-
-- migrate only after enough evals exist to rank attempts,
-- prefer strong recent attempts,
-- cap migration per cycle,
-- notify the destination island so agents know what changed.
-
-Use migration to prevent isolation, not to force all islands into one method too early.
+If a route needs substantial background, register the reference as external
+knowledge and cite the specific `src-*` id in the agent plan.
 
 ## Regeneration
 
 Regenerate the plan before launch when:
 
 - agents overlap too much,
-- an island has no clear theme,
 - a route ignores important knowledge,
 - the eval suggests a different decomposition,
 - or the user rejects the proposed search strategy.
 
-After attempts exist, changing routes is a new experimental condition. Record it through next-resume instruction or fork a new timestamp when the change is substantial.
+After attempts exist, changing routes is a new experimental condition. Record it
+through next-resume instruction or fork a new timestamp when the change is
+substantial.

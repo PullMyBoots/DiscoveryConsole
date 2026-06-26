@@ -6,14 +6,16 @@ import pytest
 
 from coral.config import (
     AgentConfig,
+    ComputeConfig,
     CoralConfig,
+    EvaluationConfig,
+    FinalGraderConfig,
     GraderConfig,
     GraderProfileConfig,
     KnowledgeConfig,
     ResourceConfig,
     RunConfig,
     TaskConfig,
-    WarmStartConfig,
     WorkspaceConfig,
 )
 
@@ -50,10 +52,159 @@ def test_config_from_dict():
     assert config.task.name == "t"
     assert config.grader.entrypoint == "kernel_builder.grader:Grader"
     assert config.agents.count == 1  # default
+    assert config.evaluation.level == "L2"
+
+
+def test_compute_config_defaults():
+    config = CoralConfig.from_dict(
+        {
+            "task": {"name": "t", "description": "d"},
+            "grader": {"entrypoint": "pkg.grader:Grader"},
+        }
+    )
+
+    assert config.compute.backend == "local"
+    assert config.compute.allow_unisolated_local is False
+    assert config.compute.classes["explore"].default_profile == "cpu-small"
+    assert config.compute.classes["explore"].allow_private_data is False
+    assert config.compute.profiles["cpu-small"].cpu_cores == 2
+    assert config.compute.profiles["cpu-small"].memory_gb == 8
+    assert config.compute.profiles["gpu-small"].gpu_count == 1
+
+
+def test_compute_config_roundtrip():
+    config = CoralConfig.from_dict(
+        {
+            "task": {"name": "t", "description": "d"},
+            "grader": {"entrypoint": "pkg.grader:Grader"},
+            "compute": {
+                "backend": "local",
+                "allow_unisolated_local": True,
+                "pool": {"gpu_count": 2, "gpu_ids": ["0", "1"]},
+                "classes": {
+                    "explore": {
+                        "default_profile": "gpu-fast",
+                        "network": True,
+                        "max_running_per_agent": 2,
+                    }
+                },
+                "profiles": {
+                    "gpu-fast": {
+                        "cpu_cores": 6,
+                        "memory_gb": 40,
+                        "gpu_count": 1,
+                        "timeout": 1200,
+                        "env": {"EXPERIMENT_MODE": "1"},
+                    }
+                },
+            },
+        }
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+        config.to_yaml(f.name)
+        restored = CoralConfig.from_yaml(f.name)
+
+    assert restored.compute.pool.gpu_ids == ["0", "1"]
+    assert restored.compute.allow_unisolated_local is True
+    assert restored.compute.classes["explore"].default_profile == "gpu-fast"
+    assert restored.compute.classes["explore"].network is True
+    assert restored.compute.classes["explore"].max_running_per_agent == 2
+    assert restored.compute.profiles["gpu-fast"].cpu_cores == 6
+    assert restored.compute.profiles["gpu-fast"].env == {"EXPERIMENT_MODE": "1"}
+
+
+def test_compute_rejects_unsupported_backend():
+    with pytest.raises(ValueError, match="compute.backend"):
+        ComputeConfig(backend="docker")
+
+
+def test_compute_class_requires_defined_default_profile():
+    with pytest.raises(ValueError, match="default_profile"):
+        CoralConfig.from_dict(
+            {
+                "task": {"name": "t", "description": "d"},
+                "grader": {"entrypoint": "pkg.grader:Grader"},
+                "compute": {
+                    "classes": {"explore": {"default_profile": "missing"}},
+                    "profiles": {"cpu-small": {"cpu_cores": 1}},
+                },
+            }
+        )
+
+
+def test_evaluation_level_roundtrip():
+    config = CoralConfig(
+        task=TaskConfig(name="test", description="A test"),
+        evaluation=EvaluationConfig(level="l3"),
+        grader=GraderConfig(
+            entrypoint="pkg.grader:BGrader",
+            final=FinalGraderConfig(entrypoint="pkg.grader:CGrader"),
+        ),
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+        config.to_yaml(f.name)
+        restored = CoralConfig.from_yaml(f.name)
+
+    assert restored.evaluation.level == "L3"
+    assert restored.evaluation.score_space() == "B"
+    assert restored.evaluation.score_space(final=True) == "C"
+    assert restored.grader.final.entrypoint == "pkg.grader:CGrader"
+
+
+def test_evaluation_rejects_invalid_level():
+    with pytest.raises(ValueError, match="evaluation.level"):
+        CoralConfig.from_dict(
+            {
+                "task": {"name": "t", "description": "d"},
+                "evaluation": {"level": "L4"},
+                "grader": {"entrypoint": "pkg.grader:Grader"},
+            }
+        )
+
+
+def test_l1_rejects_hidden_private_assets():
+    with pytest.raises(ValueError, match="L1"):
+        CoralConfig.from_dict(
+            {
+                "task": {"name": "t", "description": "d"},
+                "evaluation": {"level": "L1"},
+                "grader": {
+                    "entrypoint": "pkg.grader:Grader",
+                    "private": ["hidden/"],
+                },
+            }
+        )
+
+
+def test_l2_rejects_final_grader():
+    with pytest.raises(ValueError, match="L2"):
+        CoralConfig.from_dict(
+            {
+                "task": {"name": "t", "description": "d"},
+                "evaluation": {"level": "L2"},
+                "grader": {
+                    "entrypoint": "pkg.grader:Grader",
+                    "final": {"entrypoint": "pkg.grader:FinalGrader"},
+                },
+            }
+        )
+
+
+def test_l3_requires_final_grader():
+    with pytest.raises(ValueError, match="L3"):
+        CoralConfig.from_dict(
+            {
+                "task": {"name": "t", "description": "d"},
+                "evaluation": {"level": "L3"},
+                "grader": {"entrypoint": "pkg.grader:Grader"},
+            }
+        )
 
 
 def test_legacy_grader_type_rejected():
-    """Removed grader.type field raises a ValueError with migration guidance."""
+    """Removed grader.type field raises a ValueError with upgrade guidance."""
     data = {
         "task": {"name": "t", "description": "d"},
         "grader": {"type": "function"},
@@ -63,13 +214,39 @@ def test_legacy_grader_type_rejected():
 
 
 def test_legacy_grader_module_rejected():
-    """Removed grader.module field raises a ValueError with migration guidance."""
+    """Removed grader.module field raises a ValueError with upgrade guidance."""
     data = {
         "task": {"name": "t", "description": "d"},
         "grader": {"module": "my.module"},
     }
     with pytest.raises(ValueError, match="grader.module"):
         CoralConfig.from_dict(data)
+
+
+def test_legacy_islands_config_rejected():
+    data = {
+        "task": {"name": "t", "description": "d"},
+        "islands": {"count": 2},
+    }
+    with pytest.raises(ValueError, match="removed topology section"):
+        CoralConfig.from_dict(data)
+
+
+def test_legacy_islands_dotlist_rejected():
+    config = CoralConfig.from_dict({"task": {"name": "t", "description": "d"}})
+    with pytest.raises(ValueError, match="removed topology section"):
+        CoralConfig.merge_dotlist(config, ["islands.count=2"])
+
+
+def test_sharing_toggles_are_removed():
+    with pytest.raises(ValueError, match=r"sharing\.\* toggles have been removed"):
+        CoralConfig.from_dict(
+            {
+                "task": {"name": "t", "description": "d"},
+                "grader": {"entrypoint": "pkg.grader:Grader"},
+                "sharing": {"notes": False},
+            }
+        )
 
 
 def test_agent_runtime_options_roundtrip():
@@ -177,6 +354,7 @@ def test_grader_parallel_resource_pool_roundtrip():
                     "resources": {
                         "cpu_cores": 64,
                         "memory_gb": 256,
+                        "storage_gb": 1024,
                         "gpu_count": 3,
                         "gpu_ids": ["0", "1", "2"],
                     },
@@ -193,6 +371,7 @@ def test_grader_parallel_resource_pool_roundtrip():
     assert restored.grader.parallel.max_workers == 4
     assert restored.grader.parallel.resources.cpu_cores == 64
     assert restored.grader.parallel.resources.memory_gb == 256
+    assert restored.grader.parallel.resources.storage_gb == 1024
     assert restored.grader.parallel.resources.gpu_count == 3
     assert restored.grader.parallel.resources.gpu_ids == ["0", "1", "2"]
 
@@ -202,6 +381,8 @@ def test_resource_config_rejects_negative_values():
         ResourceConfig(cpu_cores=-1)
     with pytest.raises(ValueError, match="memory_gb"):
         ResourceConfig(memory_gb=-1)
+    with pytest.raises(ValueError, match="storage_gb"):
+        ResourceConfig(storage_gb=-1)
     with pytest.raises(ValueError, match="gpu_count"):
         ResourceConfig(gpu_count=-1)
 
@@ -253,33 +434,15 @@ def test_missing_task_description():
         CoralConfig.from_dict({"task": {"name": "t"}})
 
 
-def test_legacy_reflect_every():
-    """Legacy reflect_every/heartbeat_every keys should be preprocessed."""
+@pytest.mark.parametrize("key", ["heartbeat", "reflect_every", "heartbeat_every"])
+def test_removed_agent_heartbeat_keys_are_rejected(key):
     data = {
         "task": {"name": "t", "description": "d"},
-        "agents": {"reflect_every": 3, "heartbeat_every": 5},
+        "agents": {key: [] if key == "heartbeat" else 3},
     }
-    config = CoralConfig.from_dict(data)
-    assert config.agents.heartbeat_interval("reflect") == 3
-    assert config.agents.heartbeat_interval("consolidate") == 5
 
-
-def test_heartbeat_global_flag_roundtrip():
-    """Heartbeat 'global' key in YAML should map to is_global."""
-    data = {
-        "task": {"name": "t", "description": "d"},
-        "agents": {
-            "heartbeat": [
-                {"name": "reflect", "every": 1, "global": True},
-            ]
-        },
-    }
-    config = CoralConfig.from_dict(data)
-    assert config.agents.heartbeat[0].is_global is True
-
-    # Round-trip through to_dict
-    d = config.to_dict()
-    assert d["agents"]["heartbeat"][0]["global"] is True
+    with pytest.raises(ValueError, match="Removed agent loop key"):
+        CoralConfig.from_dict(data)
 
 
 def test_run_config_defaults():
@@ -383,55 +546,6 @@ def test_assignments_model_default_from_runtime_via_preprocess():
     assert config.agents.assignments[0].model == "gpt-5.4"
 
 
-def test_warmstart_config_defaults():
-    data = {
-        "task": {"name": "t", "description": "d"},
-    }
-    config = CoralConfig.from_dict(data)
-    assert config.agents.warmstart.enabled is False
-
-
-def test_warmstart_config_from_yaml():
-    data = {
-        "task": {"name": "t", "description": "d"},
-        "agents": {
-            "warmstart": {
-                "enabled": True,
-            },
-        },
-    }
-    config = CoralConfig.from_dict(data)
-    assert config.agents.warmstart.enabled is True
-
-
-def test_warmstart_config_roundtrip():
-    config = CoralConfig(
-        task=TaskConfig(name="t", description="d"),
-        agents=AgentConfig(
-            warmstart=WarmStartConfig(enabled=True),
-        ),
-    )
-
-    with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
-        config.to_yaml(f.name)
-        restored = CoralConfig.from_yaml(f.name)
-
-    assert restored.agents.warmstart.enabled is True
-
-
-def test_warmstart_dotlist_override():
-    config = CoralConfig(
-        task=TaskConfig(name="t", description="d"),
-    )
-    merged = CoralConfig.merge_dotlist(
-        config,
-        [
-            "agents.warmstart.enabled=true",
-        ],
-    )
-    assert merged.agents.warmstart.enabled is True
-
-
 def test_skills_config_roundtrip():
     """agents.skills survives a YAML to_yaml/from_yaml roundtrip."""
     skills = ["./skills/test-skill", "./skills/other"]
@@ -450,88 +564,3 @@ def test_skills_config_defaults_empty():
     data = {"task": {"name": "t", "description": "d"}}
     config = CoralConfig.from_dict(data)
     assert config.agents.skills == []
-
-
-def test_islands_defaults_single_island():
-    cfg = CoralConfig.from_dict(
-        {
-            "task": {"name": "t", "description": "d"},
-        }
-    )
-    assert cfg.islands.count == 1
-    assert cfg.islands.migration.enabled is True
-    assert cfg.islands.migration.every == 50
-    assert cfg.islands.migration.rank_window == 20
-    assert cfg.islands.migration.min_evals == 3
-    assert cfg.islands.migration.dest_weighting == "score"
-    assert cfg.islands.migration.max_per_cycle == 2
-    assert cfg.islands.migration.notify_island is True
-
-
-def test_islands_count_override():
-    cfg = CoralConfig.from_dict(
-        {
-            "task": {"name": "t", "description": "d"},
-            "islands": {"count": 4},
-        }
-    )
-    assert cfg.islands.count == 4
-
-
-def test_islands_migration_override():
-    cfg = CoralConfig.from_dict(
-        {
-            "task": {"name": "t", "description": "d"},
-            "islands": {"count": 2, "migration": {"every": 25, "dest_weighting": "uniform"}},
-        }
-    )
-    assert cfg.islands.migration.every == 25
-    assert cfg.islands.migration.dest_weighting == "uniform"
-
-
-def test_islands_count_validation():
-    import pytest
-
-    with pytest.raises(ValueError, match="islands.count must be >= 1"):
-        CoralConfig.from_dict(
-            {
-                "task": {"name": "t", "description": "d"},
-                "islands": {"count": 0},
-            }
-        )
-
-
-def test_migration_every_validation():
-    import pytest
-
-    with pytest.raises(ValueError, match="islands.migration.every must be >= 1"):
-        CoralConfig.from_dict(
-            {
-                "task": {"name": "t", "description": "d"},
-                "islands": {"migration": {"every": 0}},
-            }
-        )
-
-
-def test_migration_rank_window_validation():
-    import pytest
-
-    with pytest.raises(ValueError, match="islands.migration.rank_window"):
-        CoralConfig.from_dict(
-            {
-                "task": {"name": "t", "description": "d"},
-                "islands": {"migration": {"every": 10, "rank_window": 20}},
-            }
-        )
-
-
-def test_migration_dest_weighting_validation():
-    import pytest
-
-    with pytest.raises(ValueError, match="dest_weighting"):
-        CoralConfig.from_dict(
-            {
-                "task": {"name": "t", "description": "d"},
-                "islands": {"migration": {"dest_weighting": "nonsense"}},
-            }
-        )

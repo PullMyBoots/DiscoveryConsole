@@ -101,14 +101,16 @@ uv run coral --version
 
 Standardized coding benchmarks like **SWE-bench Verified** and **terminal-bench** are shipped as example tasks under `examples/`, not as Python extras. Their graders delegate evaluation to [Harbor](https://github.com/corca-ai/harbor), which runs each instance inside its own Docker container.
 
-Run them directly with `coral start` — no extra `uv sync` step is required:
+Prepare and start them through the normal timestamp workflow — no extra `uv sync` step is required:
 
 ```bash
 # SWE-bench Verified (meta-solver optimization over 500 GitHub issues)
-coral start -c examples/swebench-verified/task.yaml
+coral prepare -c examples/swebench-verified/task.yaml
+coral start -c results/<task>/latest/.coral/config.yaml
 
 # terminal-bench (meta-solver optimization over terminal/shell tasks)
-coral start -c examples/terminal-bench/task.yaml
+coral prepare -c examples/terminal-bench/task.yaml
+coral start -c results/<task>/latest/.coral/config.yaml
 ```
 
 Each task's seed includes a `solve.py` baseline (a Terminus2-based Harbor agent) and a grader that invokes `uvx harbor run -d <dataset>` with tiered evaluation (5 → 30 → all instances). See the [Benchmarks guide](/guides/benchmarks) for details.

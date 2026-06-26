@@ -16,9 +16,8 @@ from coral.agent.state import read_agent_state
 from coral.cli._helpers import (
     docker_cmd,
     find_coral_dir,
-    find_coral_dir_and_island,
     find_tmux_session,
-    find_worktree_coral_dir_and_island,
+    find_worktree_coral_dir,
     has_docker,
     has_docker_marker,
     has_tmux,
@@ -36,7 +35,7 @@ from coral.cli._helpers import (
     setup_logging,
 )
 from coral.config import CoralConfig
-from coral.workspace.project import slugify
+from coral.workspace.project import reconstruct_paths, slugify
 
 
 def _read_resume_instruction(args: argparse.Namespace) -> str | None:
@@ -110,6 +109,85 @@ def _task_dir_for_start_config(config_path: Path) -> Path:
         if config_dir_file.exists():
             return Path(config_dir_file.read_text().strip()).expanduser().resolve()
     return task_dir
+
+
+def _prepared_paths_from_config(config: CoralConfig, config_path: Path):
+    """Return ProjectPaths for a prepared run config, or None for task configs."""
+    coral_dir = config_path.parent
+    if coral_dir.name != ".coral" or not coral_dir.is_dir():
+        return None
+    return reconstruct_paths(coral_dir)
+
+
+_START_OVERRIDE_EXACT = {
+    "agents.model",
+    "agents.research",
+    "agents.runtime",
+    "grader.profile",
+    "grader.parallel.max_workers",
+    "run.max_runtime_seconds",
+    "run.session",
+    "run.ui",
+    "run.verbose",
+}
+
+_START_OVERRIDE_PREFIXES = (
+    "agents.runtime_options.",
+    "grader.parallel.resources.",
+    "grader.resources.",
+)
+
+
+def _is_internal_docker_workspace_override(key: str, value: str) -> bool:
+    """Allow CORAL's own Docker wrapper to remap host paths inside the container."""
+    if not in_docker():
+        return False
+    allowed = {
+        "workspace.run_dir": {"/app/run"},
+        "workspace.repo_path": {"/app/run/repo", "/repo"},
+    }
+    return value in allowed.get(key, set())
+
+
+def _public_launch_overrides(overrides: list[str]) -> list[str]:
+    """Return launch overrides that should be persisted to the run config."""
+    public: list[str] = []
+    for raw in overrides:
+        key, sep, value = raw.partition("=")
+        if sep and _is_internal_docker_workspace_override(key.strip(), value.strip()):
+            continue
+        public.append(raw)
+    return public
+
+
+def _reject_unsafe_launch_overrides(overrides: list[str]) -> None:
+    """Reject overrides that would mutate Codex-prepared topology or task meaning."""
+    unsafe: list[str] = []
+    for raw in overrides:
+        key, sep, value = raw.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            unsafe.append(raw)
+            continue
+        if sep and _is_internal_docker_workspace_override(key, value):
+            continue
+        if key in _START_OVERRIDE_EXACT:
+            continue
+        if any(key.startswith(prefix) for prefix in _START_OVERRIDE_PREFIXES):
+            continue
+        unsafe.append(key)
+    if unsafe:
+        print(
+            "Error: launch commands only accept runtime-safe overrides for a prepared run.",
+            file=sys.stderr,
+        )
+        print(
+            "  Move topology, workspace, task, eval-version, and agent-count changes to `coral prepare`.",
+            file=sys.stderr,
+        )
+        print(f"  Rejected override(s): {', '.join(unsafe)}", file=sys.stderr)
+        sys.exit(2)
 
 
 def _start_in_tmux(args: argparse.Namespace, config: CoralConfig) -> None:
@@ -284,20 +362,19 @@ def _start_in_docker(args: argparse.Namespace, config: CoralConfig) -> None:
     container_name = f"coral-{task_name}-{timestamp}"
 
     config_path = Path(args.config).resolve()
-    config_dir = config_path.parent
+    prepared_paths = _prepared_paths_from_config(config, config_path)
+    if prepared_paths is None:
+        print("Error: docker start requires a prepared run config.", file=sys.stderr)
+        sys.exit(2)
 
-    results_dir = Path(config.workspace.results_dir)
-    if not results_dir.is_absolute():
-        results_dir = (Path.cwd() / results_dir).resolve()
-    results_dir.mkdir(parents=True, exist_ok=True)
-
-    task_slug = slugify(config.task.name)
-    host_task_dir = results_dir / task_slug
-    host_task_dir.mkdir(parents=True, exist_ok=True)
-    host_run_dir = host_task_dir / timestamp
-    host_run_dir.mkdir(parents=True, exist_ok=True)
-
-    repo_path = Path(config.workspace.repo_path).resolve()
+    host_run_dir = prepared_paths.run_dir
+    config_dir_file = prepared_paths.coral_dir / "config_dir"
+    config_dir = (
+        Path(config_dir_file.read_text().strip()).expanduser().resolve()
+        if config_dir_file.exists()
+        else config_path.parent
+    )
+    repo_path = prepared_paths.repo_dir
 
     docker_cmd = _build_docker_cmd(
         container_name=container_name,
@@ -311,9 +388,9 @@ def _start_in_docker(args: argparse.Namespace, config: CoralConfig) -> None:
         [
             "start",
             "--config",
-            f"/task/{config_path.name}",
+            "/app/run/.coral/config.yaml",
             "workspace.run_dir=/app/run",
-            "workspace.repo_path=/repo",
+            "workspace.repo_path=/app/run/repo",
             "run.session=local",
         ]
     )
@@ -324,13 +401,6 @@ def _start_in_docker(args: argparse.Namespace, config: CoralConfig) -> None:
     save_docker_container_name(host_run_dir, container_name)
     (host_run_dir / ".coral_host_repo_path").write_text(str(repo_path))
     (host_run_dir / ".coral_host_config_dir").write_text(str(config_dir))
-
-    # Create the "latest" symlink on the host
-    latest_link = host_task_dir / "latest"
-    rel = os.path.relpath(host_run_dir, host_task_dir)
-    if latest_link.is_symlink() or latest_link.exists():
-        latest_link.unlink()
-    latest_link.symlink_to(rel)
 
 
 def _resume_in_tmux(args: argparse.Namespace, config: CoralConfig, coral_dir: Path) -> None:
@@ -392,13 +462,70 @@ def _resume_in_tmux(args: argparse.Namespace, config: CoralConfig, coral_dir: Pa
     print("  Stop:    coral stop")
 
 
+def cmd_prepare(args: argparse.Namespace) -> None:
+    """Prepare a timestamp run without launching agents."""
+    config_path = Path(args.config).resolve()
+    config = CoralConfig.from_yaml(config_path)
+    overrides = getattr(args, "overrides", [])
+    if overrides:
+        config = CoralConfig.merge_dotlist(config, overrides)
+
+    from coral.agent.manager import AgentManager
+    from coral.cli.validation import validate_task
+    from coral.hub.readiness import build_control_readiness
+
+    verbose = config.run.verbose
+    setup_logging(verbose=verbose)
+
+    task_dir = _task_dir_for_start_config(config_path)
+    config.task_dir = task_dir
+    errors = validate_task(task_dir)
+    if errors:
+        print("Task validation errors:", file=sys.stderr)
+        for err in errors:
+            print(f"  - {err}", file=sys.stderr)
+        sys.exit(1)
+
+    manager = AgentManager(config, verbose=verbose, config_dir=config_path.parent)
+    paths = manager.prepare_all()
+
+    prepare_cmd = f"coral prepare -c {args.config}"
+    if overrides:
+        prepare_cmd += " " + " ".join(overrides)
+    (paths.run_dir / "prepare_cmd.txt").write_text(prepare_cmd + "\n")
+
+    readiness = build_control_readiness(paths.coral_dir)
+    status = str(readiness.get("status") or "missing")
+
+    print("Prepared CORAL run workspace:")
+    print(f"  Run directory: {paths.run_dir}")
+    print(f"  Config:        {paths.coral_dir / 'config.yaml'}")
+    print(f"  Agents:        {paths.agents_dir}")
+    print(f"  Readiness:     {status.upper()}")
+    print("\nLaunch:")
+    print(f"  coral start -c {paths.coral_dir / 'config.yaml'}")
+
+
 def cmd_start(args: argparse.Namespace) -> None:
     """Start CORAL agents."""
     config_path = Path(args.config).resolve()
     config = CoralConfig.from_yaml(config_path)
     overrides = getattr(args, "overrides", [])
     if overrides:
+        _reject_unsafe_launch_overrides(overrides)
         config = CoralConfig.merge_dotlist(config, overrides)
+
+    prepared_paths = _prepared_paths_from_config(config, config_path)
+    if prepared_paths is None:
+        print(
+            "Error: `coral start` launches an already prepared timestamp run.\n"
+            "  First prepare the workspace with:\n"
+            f"    coral prepare -c {config_path}\n"
+            "  Then launch the prepared run with:\n"
+            "    coral start -c <run>/.coral/config.yaml",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     session = config.run.session
 
@@ -446,6 +573,33 @@ def cmd_start(args: argparse.Namespace) -> None:
             print(f"  - {err}", file=sys.stderr)
         sys.exit(1)
 
+    public_overrides = _public_launch_overrides(overrides)
+    if public_overrides:
+        persisted_config = CoralConfig.merge_dotlist(
+            CoralConfig.from_yaml(config_path),
+            public_overrides,
+        )
+        if in_tmux():
+            persisted_config.run.session = "tmux"
+        elif in_docker():
+            persisted_config.run.session = "docker"
+        persisted_config.to_yaml(config_path)
+
+    from coral.hub.readiness import build_control_readiness
+
+    readiness = build_control_readiness(prepared_paths.coral_dir)
+    if readiness.get("status") == "missing":
+        missing = [
+            str(check.get("label") or check.get("id") or "check")
+            for check in readiness.get("checks", [])
+            if isinstance(check, dict) and check.get("status") == "missing"
+        ]
+        detail = ", ".join(missing) if missing else "workspace readiness checks"
+        print(f"Error: run is not ready. Codex must prepare: {detail}", file=sys.stderr)
+        print("  Check details with:", file=sys.stderr)
+        print(f"    coral validate --run-dir {prepared_paths.coral_dir}", file=sys.stderr)
+        sys.exit(1)
+
     if verbose:
         from coral.agent.assignments import resolve_agent_specs
 
@@ -464,12 +618,14 @@ def cmd_start(args: argparse.Namespace) -> None:
         print(f"[coral] Max turns:  {config.agents.max_turns}")
         print(f"[coral] Results:    {config.workspace.results_dir}")
         print(f"[coral] Repo path:  {config.workspace.repo_path}")
-        if config.agents.warmstart.enabled:
-            print("[coral] Warm-start: enabled")
         print()
 
     manager = AgentManager(config, verbose=verbose, config_dir=config_path.parent)
-    handles = manager.start_all()
+    try:
+        handles = manager.launch_prepared(prepared_paths)
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     print(f"Started {len(handles)} agent(s):")
     for h in handles:
@@ -576,13 +732,13 @@ def cmd_resume(args: argparse.Namespace) -> None:
 
     task = getattr(args, "task", None)
     run = getattr(args, "run", None)
-    worktree_scope = None if task or run else find_worktree_coral_dir_and_island()
+    worktree_scope = None if task or run else find_worktree_coral_dir()
     if task or run or in_docker():
         coral_dir = find_coral_dir(task, run)
     elif worktree_scope is not None:
         # Agent in a worktree: lock to the current run via the breadcrumb
         # instead of showing all stopped runs in a picker.
-        coral_dir = worktree_scope[0]
+        coral_dir = worktree_scope
     else:
         coral_dir = pick_run(status_filter="stopped", allow_cancel=True)
     if coral_dir is None:
@@ -596,9 +752,20 @@ def cmd_resume(args: argparse.Namespace) -> None:
     config = CoralConfig.from_yaml(config_path)
     overrides = getattr(args, "overrides", [])
     if overrides:
+        _reject_unsafe_launch_overrides(overrides)
         config = CoralConfig.merge_dotlist(config, overrides)
-        # Persist overrides so eval hooks (which re-read config.yaml) see them
-        config.to_yaml(config_path)
+        # Persist user-visible overrides so eval hooks (which re-read
+        # config.yaml) see them. Docker's internal path remapping stays
+        # process-local and must not rewrite the host prepared config.
+        public_overrides = _public_launch_overrides(overrides)
+        if public_overrides:
+            persisted_config = CoralConfig.merge_dotlist(
+                CoralConfig.from_yaml(config_path),
+                public_overrides,
+            )
+            if in_docker():
+                persisted_config.run.session = "docker"
+            persisted_config.to_yaml(config_path)
 
     if config.run.session == "docker" and not in_docker():
         if not has_docker():
@@ -755,27 +922,6 @@ def _stop_one(coral_dir: Path) -> None:
         kill_tmux_session(coral_dir)
 
 
-def _current_agent_islands(run_dir: Path) -> dict[str, str]:
-    """Read current island membership from agent worktree breadcrumbs."""
-    agents_dir = run_dir / "agents"
-    if not agents_dir.is_dir():
-        return {}
-    current: dict[str, str] = {}
-    for agent_dir in agents_dir.iterdir():
-        if not agent_dir.is_dir():
-            continue
-        island_file = agent_dir / ".coral_island"
-        if not island_file.exists():
-            continue
-        try:
-            island_id = island_file.read_text().strip()
-        except OSError:
-            continue
-        if island_id:
-            current[agent_dir.name] = island_id
-    return current
-
-
 def cmd_stop(args: argparse.Namespace) -> None:
     """Stop CORAL agents."""
     if getattr(args, "all", False):
@@ -795,7 +941,7 @@ def cmd_stop(args: argparse.Namespace) -> None:
     else:
         task = getattr(args, "task", None)
         run = getattr(args, "run", None)
-        worktree_scope = None if task or run else find_worktree_coral_dir_and_island()
+        worktree_scope = None if task or run else find_worktree_coral_dir()
         if task or run:
             coral_dir = find_coral_dir(task, run)
         elif in_docker():
@@ -803,7 +949,7 @@ def cmd_stop(args: argparse.Namespace) -> None:
         elif worktree_scope is not None:
             # Agent in a worktree: lock to the current run via the breadcrumb
             # instead of showing all running runs.
-            coral_dir = worktree_scope[0]
+            coral_dir = worktree_scope
         else:
             coral_dir = pick_run(status_filter="running", allow_cancel=True)
         if coral_dir is None:
@@ -822,20 +968,17 @@ def cmd_status(args: argparse.Namespace) -> None:
 
     task = getattr(args, "task", None)
     run = getattr(args, "run", None)
-    worktree_scope = None if task or run else find_worktree_coral_dir_and_island()
+    worktree_scope = None if task or run else find_worktree_coral_dir()
     if task or run:
         coral_dir = find_coral_dir(task, run)
-        island_id = None
     elif in_docker():
-        coral_dir, island_id = find_coral_dir_and_island()
+        coral_dir = find_coral_dir()
     elif worktree_scope is not None:
         # Agent in a worktree: lock to the current run via the .coral_dir
-        # breadcrumb, scoped to the worktree's island so the leaderboard /
-        # status summary only see that island.
-        coral_dir, island_id = worktree_scope
+        # breadcrumb.
+        coral_dir = worktree_scope
     else:
         coral_dir = pick_run()
-        island_id = None
 
     real_coral = coral_dir.resolve()
     run_dir = real_coral.parent
@@ -869,46 +1012,24 @@ def cmd_status(args: argparse.Namespace) -> None:
         else:
             print("Manager: not running")
 
-    # Agent liveness follows the same scope as attempts/leaderboards. In
-    # multi-island mode logs live in islands/<id>/logs/ — public/logs is
-    # empty — so unscoped operator views aggregate, while worktree views
-    # stay pinned to their island.
-    from coral.hub._island import all_view_roots, island_root
-
     log_files: list[Path] = []
-    if island_id is not None or not (coral_dir / "islands").exists():
-        view_roots = [island_root(coral_dir, island_id)]
-    else:
-        view_roots = all_view_roots(coral_dir)
-    for view_root in view_roots:
-        view_logs = view_root / "logs"
-        if view_logs.is_dir():
-            log_files.extend(view_logs.glob("*.log"))
+    view_logs = coral_dir / "public" / "logs"
+    if view_logs.is_dir():
+        log_files.extend(view_logs.glob("*.log"))
     if log_files:
         agent_logs: dict[str, list[Path]] = {}
         for lf in log_files:
             parts = lf.stem.rsplit(".", 1)
             agent_name = parts[0] if len(parts) == 2 else lf.stem
             agent_logs.setdefault(agent_name, []).append(lf)
-        current_agent_islands = _current_agent_islands(run_dir)
-        if island_id is not None and current_agent_islands:
-            agent_logs = {
-                agent_name: logs
-                for agent_name, logs in agent_logs.items()
-                if current_agent_islands.get(agent_name) == str(island_id)
-            }
-
         # Best-effort read of the manager-persisted reliability state.
         # Missing or corrupt agent_state.json falls back to log inference.
         agent_state_doc = read_agent_state(coral_dir)
         agent_states = agent_state_doc.agents
-        from coral.hub.attempts import _read_all_island_attempts, read_attempts
+        from coral.hub.attempts import read_attempts
 
         class_counts: dict[str, dict[str, int]] = {}
-        if island_id is not None or not (coral_dir / "islands").exists():
-            attempts = read_attempts(coral_dir, island_id=island_id)
-        else:
-            attempts = _read_all_island_attempts(coral_dir)
+        attempts = read_attempts(coral_dir)
         for a in attempts:
             if a.status == "pending":
                 continue
@@ -964,14 +1085,10 @@ def cmd_status(args: argparse.Namespace) -> None:
     direction = read_direction(coral_dir)
     print()
     show_all = getattr(args, "all", False)
-    summary = format_status_summary(
-        str(coral_dir), direction=direction, island_id=island_id, include_tune=show_all
-    )
+    summary = format_status_summary(str(coral_dir), direction=direction, include_tune=show_all)
     print(summary)
 
-    top = get_leaderboard(
-        str(coral_dir), top_n=10, direction=direction, island_id=island_id, include_tune=show_all
-    )
+    top = get_leaderboard(str(coral_dir), top_n=10, direction=direction, include_tune=show_all)
     if top:
         print(f"\n## Leaderboard (top {len(top)})")
         print(format_leaderboard(top))

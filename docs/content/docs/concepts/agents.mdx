@@ -31,7 +31,7 @@ When `coral start` runs, the agent manager:
 2. Copies seed files from the task directory
 3. Generates a `CORAL.md` file with task-specific instructions
 4. Installs workspace guard hooks (file access boundaries)
-5. Symlinks shared state (attempts, notes, skills) from `.coral/public/`
+5. Symlinks shared state (attempts, knowledge, skills, jobs, logs) from `.coral/public/`
 6. Launches the agent subprocess
 
 ### 2. Running
@@ -44,7 +44,7 @@ Each agent follows the workflow described in its `CORAL.md`:
 4. **Eval** — run `coral eval -m "description"` to grade
 5. **Iterate** — read the score and feedback, decide next steps
 
-Agents share knowledge through notes and skills in `.coral/public/`.
+Agents share knowledge through `coral kb` indexes and skills in `.coral/public/`.
 
 ### 3. Stopping
 
@@ -60,7 +60,7 @@ Each agent works in its own git worktree. A **workspace guard hook** ensures:
 
 - Agents can read/write files in their own worktree
 - Agents can read (but not write) sibling agent worktrees
-- Agents can read/write to `.coral/public/` (shared state)
+- Agents can access public shared state through their runtime shared directory and `CORAL_SHARED`
 - Agents **cannot** access `.coral/private/` (grader code, test data)
 - Web search is blocked unless `research: true` is set
 
@@ -73,10 +73,10 @@ agents:
   model: opus                # Use Opus for more capable agents
 ```
 
-You can override the model at launch time:
+You can override the model while preparing the timestamp:
 
 ```bash
-coral start -c task.yaml agents.model=opus
+coral prepare -c task.yaml agents.model=opus
 ```
 
 ## Multi-agent runs
@@ -91,5 +91,5 @@ agents:
 Each agent gets:
 - Its own worktree and git history
 - Access to all other agents' attempts (scores and diffs)
-- Shared notes for communicating insights
+- Shared indexed practice knowledge for communicating insights
 - Shared skills for reusable tools

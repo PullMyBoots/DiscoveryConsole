@@ -92,12 +92,9 @@ def _known_agent_ids(coral_dir: Path) -> set[str]:
         from coral.hub.plan import build_agent_plan
 
         plan = build_agent_plan(coral_dir)
-        for island in plan.get("islands", []):
-            if not isinstance(island, dict):
-                continue
-            for agent in island.get("agents", []):
-                if isinstance(agent, dict) and agent.get("agent_id"):
-                    ids.add(str(agent["agent_id"]))
+        for agent in plan.get("agents", []):
+            if isinstance(agent, dict) and agent.get("agent_id"):
+                ids.add(str(agent["agent_id"]))
     except Exception:
         pass
 
@@ -153,15 +150,10 @@ async def get_config(request: Request) -> JSONResponse:
 
 
 async def get_attempts(request: Request) -> JSONResponse:
-    """GET /api/attempts — return all attempts sorted by timestamp.
+    """GET /api/attempts — return all attempts sorted by timestamp."""
+    from coral.hub.attempts import read_attempts
 
-    Aggregates across islands so the dashboard reflects the whole team, not
-    just the attempts in ``coral_dir/public/attempts`` (which is empty in
-    multi-island mode).
-    """
-    from coral.hub.attempts import _read_all_island_attempts
-
-    attempts = _read_all_island_attempts(_coral_dir(request))
+    attempts = read_attempts(_coral_dir(request))
     attempts.sort(key=lambda a: a.timestamp)
     return JSONResponse([a.to_dict() for a in attempts])
 
@@ -178,27 +170,19 @@ async def get_leaderboard(request: Request) -> JSONResponse:
 
 
 async def get_attempt_detail(request: Request) -> JSONResponse:
-    """GET /api/attempts/{hash} — return a single attempt.
-
-    Searches every island's attempts dir (and the legacy ``public/attempts``)
-    so a hash from any island resolves. Mirrors the cross-island lookup that
-    ``coral show`` already does in the CLI.
-    """
-    from coral.hub._island import all_view_roots
-
+    """GET /api/attempts/{hash} — return a single attempt."""
     commit_hash = request.path_params["hash"]
     coral_dir = _coral_dir(request)
+    attempts_dir = coral_dir / "public" / "attempts"
 
-    # Direct hit anywhere first.
-    for view_root in all_view_roots(coral_dir):
-        candidate = view_root / "attempts" / f"{commit_hash}.json"
-        if candidate.exists():
-            return JSONResponse(json.loads(candidate.read_text()))
+    candidate = attempts_dir / f"{commit_hash}.json"
+    if candidate.exists():
+        return JSONResponse(json.loads(candidate.read_text()))
 
-    # Prefix match — ambiguous across islands → 404 rather than guessing.
+    # Prefix match — ambiguous prefixes return 404 rather than guessing.
     matches: list[Path] = []
-    for view_root in all_view_roots(coral_dir):
-        matches.extend((view_root / "attempts").glob(f"{commit_hash}*.json"))
+    if attempts_dir.is_dir():
+        matches.extend(attempts_dir.glob(f"{commit_hash}*.json"))
     if len(matches) == 1:
         return JSONResponse(json.loads(matches[0].read_text()))
     return JSONResponse({"error": "attempt not found"}, status_code=404)
@@ -211,16 +195,6 @@ async def get_agent_attempts(request: Request) -> JSONResponse:
     agent_id = request.path_params["id"]
     attempts = _get_agent_attempts(str(_coral_dir(request)), agent_id)
     return JSONResponse([a.to_dict() for a in attempts])
-
-
-async def get_notes(request: Request) -> JSONResponse:
-    """GET /api/notes — return all notes."""
-    from coral.hub.notes import list_notes
-
-    entries = list_notes(str(_coral_dir(request)))
-    for i, entry in enumerate(entries):
-        entry["index"] = i
-    return JSONResponse(entries)
 
 
 async def get_skills(request: Request) -> JSONResponse:
@@ -272,7 +246,7 @@ async def get_review(request: Request) -> JSONResponse:
 
 
 async def add_knowledge_note(request: Request) -> JSONResponse:
-    """POST /api/knowledge/notes — add a run-global review note."""
+    """POST /api/knowledge/review-notes — add a practice review note."""
     from coral.hub.knowledge import add_review_note
 
     body = await request.json()
@@ -353,18 +327,14 @@ async def update_knowledge_source_status(request: Request) -> JSONResponse:
 
 async def get_skill_detail(request: Request) -> JSONResponse:
     """GET /api/skills/{name} — return a specific skill."""
-    from coral.hub._island import all_view_roots
     from coral.hub.skills import read_skill
 
     name = request.path_params["name"]
     coral_dir = _coral_dir(request)
-    skill_dir = None
-    for view_root in all_view_roots(coral_dir):
-        candidate = view_root / "skills" / name
-        if candidate.is_dir():
-            skill_dir = candidate
-            break
+    skill_dir = coral_dir / "public" / "skills" / name
     if skill_dir is None:
+        return JSONResponse({"error": "skill not found"}, status_code=404)
+    if not skill_dir.is_dir():
         return JSONResponse({"error": "skill not found"}, status_code=404)
 
     info = read_skill(skill_dir)
@@ -666,8 +636,7 @@ async def get_evals(request: Request) -> JSONResponse:
     """GET /api/evals — return queued/evaluating eval jobs with latest progress."""
     from coral.config import CoralConfig
     from coral.grader.daemon import planned_evaluating_hashes
-    from coral.hub._island import all_view_roots
-    from coral.hub.attempts import _read_all_island_attempts
+    from coral.hub.attempts import read_attempts
 
     coral_dir = _coral_dir(request)
     config = _load_yaml(coral_dir / "config.yaml")
@@ -682,27 +651,18 @@ async def get_evals(request: Request) -> JSONResponse:
     except Exception:
         coral_config = None
 
-    pending = [
-        a for a in _read_all_island_attempts(coral_dir) if a.status == "pending" and a.score is None
-    ]
+    pending = [a for a in read_attempts(coral_dir) if a.status == "pending" and a.score is None]
     pending.sort(key=lambda a: a.timestamp)
     if coral_config is not None:
         evaluating_hashes = planned_evaluating_hashes(pending, coral_config, max_workers=max_workers)
     else:
         evaluating_hashes = {a.commit_hash for a in pending[:max_workers]}
 
-    view_roots = all_view_roots(coral_dir)
-    eval_log_roots = {root.name: root / "eval_logs" for root in view_roots}
-    if len(view_roots) == 1 and view_roots[0].name == "public":
-        eval_log_roots[None] = view_roots[0] / "eval_logs"
+    eval_log_root = coral_dir / "public" / "eval_logs"
 
     jobs: list[dict[str, Any]] = []
     for attempt in pending:
-        island_id = (attempt.metadata or {}).get("island_id")
-        log_root = eval_log_roots.get(str(island_id)) or eval_log_roots.get(None)
-        progress = None
-        if log_root is not None:
-            progress = _latest_progress_event(log_root / attempt.commit_hash / "progress.jsonl")
+        progress = _latest_progress_event(eval_log_root / attempt.commit_hash / "progress.jsonl")
 
         jobs.append(
             {
@@ -713,7 +673,6 @@ async def get_evals(request: Request) -> JSONResponse:
                 "queue_status": "evaluating"
                 if attempt.commit_hash in evaluating_hashes
                 else "waiting",
-                "island_id": island_id,
                 "eval_version": (attempt.metadata or {}).get(
                     "eval_version", grader_cfg.get("eval_version", "eval_v1")
                 ),
@@ -729,6 +688,16 @@ async def get_evals(request: Request) -> JSONResponse:
 
     resource_pool = (parallel_cfg.get("resources") or {}) if isinstance(parallel_cfg, dict) else {}
     return JSONResponse({"max_workers": max_workers, "resource_pool": resource_pool, "jobs": jobs})
+
+
+async def get_jobs(request: Request) -> JSONResponse:
+    """GET /api/jobs — return A-space compute jobs recorded by `coral run`."""
+    from coral.compute.types import read_jobs
+
+    jobs = []
+    for job in sorted(read_jobs(_coral_dir(request)), key=lambda item: item.created_at, reverse=True):
+        jobs.append(job.to_dict())
+    return JSONResponse({"jobs": jobs})
 
 
 def _results_dir(request: Request) -> Path:
@@ -877,15 +846,12 @@ def _run_has_activity(coral_dir: Path) -> bool:
         except (OSError, ValueError):
             pass
 
-    from coral.hub._island import all_view_roots
-
-    for view_root in all_view_roots(coral_dir):
-        attempts_dir = view_root / "attempts"
-        if attempts_dir.is_dir() and any(attempts_dir.glob("*.json")):
-            return True
-        logs_dir = view_root / "logs"
-        if logs_dir.is_dir() and any(logs_dir.glob("*.log")):
-            return True
+    attempts_dir = coral_dir / "public" / "attempts"
+    if attempts_dir.is_dir() and any(attempts_dir.glob("*.json")):
+        return True
+    logs_dir = coral_dir / "public" / "logs"
+    if logs_dir.is_dir() and any(logs_dir.glob("*.log")):
+        return True
 
     return False
 
@@ -899,6 +865,7 @@ def _sanitize_control_config_update(
     # These define the prepared workspace and task identity, not runtime knobs.
     for path in (
         ("task",),
+        ("evaluation",),
         ("workspace",),
         ("knowledge",),
         ("agents", "count"),
@@ -907,6 +874,14 @@ def _sanitize_control_config_update(
         ("grader", "entrypoint"),
         ("grader", "setup"),
         ("grader", "private"),
+        ("grader", "args"),
+        ("grader", "timeout"),
+        ("grader", "direction"),
+        ("grader", "eval_version"),
+        ("grader", "profile"),
+        ("grader", "profiles"),
+        ("grader", "resources"),
+        ("grader", "final"),
     ):
         _copy_config_path(current, sanitized, path)
 
@@ -914,9 +889,6 @@ def _sanitize_control_config_update(
     if run_has_activity:
         for path in (
             ("agents", "runtime"),
-            ("islands", "count"),
-            ("grader", "direction"),
-            ("grader", "eval_version"),
         ):
             _copy_config_path(current, sanitized, path)
         current_options = (current.get("agents") or {}).get("runtime_options")
@@ -1050,16 +1022,10 @@ def _enumerate_runs(results_dir: Path, current_coral_dir: Path) -> dict:
             if status == "stopped" and is_docker_run_alive(coral_dir):
                 status = "running"
 
-            # Count attempts across every view root. In multi-island mode the
-            # attempts live in islands/<id>/attempts/ — public/attempts is
-            # empty — so a single-dir glob would undercount every run.
-            from coral.hub._island import all_view_roots
-
             attempt_count = 0
-            for view_root in all_view_roots(coral_dir):
-                attempts_dir = view_root / "attempts"
-                if attempts_dir.is_dir():
-                    attempt_count += sum(1 for _ in attempts_dir.glob("*.json"))
+            attempts_dir = coral_dir / "public" / "attempts"
+            if attempts_dir.is_dir():
+                attempt_count += sum(1 for _ in attempts_dir.glob("*.json"))
 
             # Check if latest (latest symlink now points to run_dir, not .coral)
             is_latest = latest_target is not None and latest_target == run_dir.resolve()
@@ -1109,26 +1075,25 @@ def _copy_if_exists(src: Path, dst: Path) -> None:
 
 def _copy_public_prelaunch_state(src_public: Path, dst_public: Path) -> None:
     """Copy Codex-prepared shared state while leaving runtime artifacts behind."""
-    for name in ("knowledge", "skills", "agents", "roles"):
+    for name in ("knowledge", "skills", "agents"):
         _copy_if_exists(src_public / name, dst_public / name)
 
-    from coral.workspace.project import _ensure_knowledge_base, _link_legacy_notes_dir
+    from coral.workspace.project import _ensure_knowledge_base
 
     _ensure_knowledge_base(dst_public / "knowledge")
-    _link_legacy_notes_dir(dst_public)
     _promote_active_knowledge(dst_public / "knowledge")
 
 
 def _promote_active_knowledge(knowledge_dir: Path) -> None:
     """Keep only active reviewed knowledge in a freshly forked timestamp."""
-    manifest = knowledge_dir / "manifest.jsonl"
-    if not manifest.exists():
+    index = knowledge_dir / "external" / "index.jsonl"
+    if not index.exists():
         return
 
     kept: list[dict[str, Any]] = []
     dropped: list[dict[str, Any]] = []
     try:
-        lines = manifest.read_text(encoding="utf-8").splitlines()
+        lines = index.read_text(encoding="utf-8").splitlines()
     except OSError:
         return
 
@@ -1143,79 +1108,30 @@ def _promote_active_knowledge(knowledge_dir: Path) -> None:
         if not isinstance(entry, dict):
             continue
         status = str(entry.get("status") or "").strip().lower()
-        if status and status != "accepted":
+        if status == "archived":
             dropped.append(entry)
             continue
-        if status == "accepted":
-            promoted = dict(entry)
-            promoted["status"] = "accepted"
-            promoted["promoted_at"] = datetime.now(UTC).isoformat()
-            _promote_accepted_inbox_source(knowledge_dir, promoted)
-            kept.append(promoted)
-        else:
-            kept.append(entry)
+        promoted = dict(entry)
+        promoted["status"] = "active"
+        promoted["promoted_at"] = datetime.now(UTC).isoformat()
+        kept.append(promoted)
 
-    protected_paths = {_manifest_relative_path(entry) for entry in kept}
+    protected_paths = {_external_item_path(entry) for entry in kept}
     protected_paths.discard("")
     for entry in dropped:
-        rel = _manifest_relative_path(entry)
+        rel = _external_item_path(entry)
         if rel and rel not in protected_paths:
             _remove_promoted_source_path(knowledge_dir, rel)
 
-    tmp = manifest.with_name(f".{manifest.name}.tmp")
+    tmp = index.with_name(f".{index.name}.tmp")
     with tmp.open("w", encoding="utf-8") as f:
         for entry in kept:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    tmp.replace(manifest)
+    tmp.replace(index)
 
 
-def _manifest_relative_path(entry: dict[str, Any]) -> str:
-    return str(entry.get("relative_path") or entry.get("path") or "").strip()
-
-
-def _promote_accepted_inbox_source(knowledge_dir: Path, entry: dict[str, Any]) -> None:
-    rel = _manifest_relative_path(entry)
-    parts = Path(rel).parts
-    if not parts or parts[0] != "inbox":
-        return
-
-    source = (knowledge_dir / rel).resolve()
-    try:
-        knowledge_root = knowledge_dir.resolve()
-    except OSError:
-        return
-    if source != knowledge_root and knowledge_root not in source.parents:
-        return
-    if not source.exists() and not source.is_symlink():
-        return
-
-    category = _safe_knowledge_segment(str(entry.get("category") or "web"), default="web")
-    dest_dir = knowledge_dir / "sources" / category
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = _unique_destination(dest_dir / source.name)
-    shutil.move(str(source), str(dest))
-    entry["relative_path"] = dest.relative_to(knowledge_dir).as_posix()
-    entry["promoted_from"] = rel
-
-
-def _safe_knowledge_segment(value: str, *, default: str) -> str:
-    cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value.strip())
-    cleaned = cleaned.strip("-_")
-    return cleaned or default
-
-
-def _unique_destination(path: Path) -> Path:
-    if not path.exists():
-        return path
-    stem = path.stem
-    suffix = path.suffix
-    parent = path.parent
-    index = 1
-    while True:
-        candidate = parent / f"{stem}-{index}{suffix}"
-        if not candidate.exists():
-            return candidate
-        index += 1
+def _external_item_path(entry: dict[str, Any]) -> str:
+    return str(entry.get("item_path") or "").strip()
 
 
 def _remove_promoted_source_path(knowledge_dir: Path, rel: str) -> None:
@@ -1370,7 +1286,7 @@ async def get_control_readiness(request: Request) -> JSONResponse:
 
 
 async def get_control_plan(request: Request) -> JSONResponse:
-    """GET /api/control/plan — preview Codex-generated agent/island plan."""
+    """GET /api/control/plan — preview Codex-generated agent plan."""
     from coral.hub.plan import build_agent_plan
 
     coral_dir = _coral_dir(request)
@@ -1468,9 +1384,16 @@ async def resume_control_run(request: Request) -> JSONResponse:
     instruction_path = _control_instruction_path(coral_dir)
 
     log_fh = open(log_path, "ab")
-    agents_dir = coral_dir.parent / "agents"
-    has_agent_worktrees = agents_dir.is_dir() and any(path.is_dir() for path in agents_dir.iterdir())
-    if has_agent_worktrees:
+    sessions_path = coral_dir / "public" / "sessions.json"
+    has_sessions = False
+    if sessions_path.exists():
+        try:
+            sessions = json.loads(sessions_path.read_text())
+            has_sessions = isinstance(sessions, dict) and bool(sessions)
+        except (json.JSONDecodeError, OSError):
+            has_sessions = False
+    should_resume = _run_has_activity(coral_dir) or has_sessions
+    if should_resume:
         cmd = [sys.executable, "-m", "coral.cli", "resume", "--task", task, "--run", run]
     else:
         cmd = [
@@ -1482,7 +1405,7 @@ async def resume_control_run(request: Request) -> JSONResponse:
             str(coral_dir / "config.yaml"),
         ]
     has_instruction = instruction_path.exists() and instruction_path.read_text().strip()
-    if has_agent_worktrees and has_instruction:
+    if should_resume and has_instruction:
         cmd.extend(["--instruction-file", str(instruction_path)])
     try:
         proc = subprocess.Popen(
@@ -1501,10 +1424,10 @@ async def resume_control_run(request: Request) -> JSONResponse:
     return JSONResponse(
         {
             "ok": True,
-            "message": "resume requested" if has_agent_worktrees else "start requested",
+            "message": "resume requested" if should_resume else "start requested",
             "pid": proc.pid,
             "log_path": str(log_path),
-            "instruction_path": str(instruction_path) if has_agent_worktrees and has_instruction else None,
+            "instruction_path": str(instruction_path) if should_resume and has_instruction else None,
         }
     )
 
@@ -1654,11 +1577,9 @@ async def get_status(request: Request) -> JSONResponse:
 
     eval_count = read_eval_count(coral_dir)
 
-    # Attempts summary — aggregate across islands so the status pane shows
-    # the whole team, not just public/attempts (empty in multi-island mode).
-    from coral.hub.attempts import _read_all_island_attempts
+    from coral.hub.attempts import read_attempts
 
-    attempts = _read_all_island_attempts(coral_dir)
+    attempts = read_attempts(coral_dir)
     scored = [a for a in attempts if a.score is not None]
     minimize = _direction(request) == "minimize"
     best_fn = min if minimize else max
@@ -1697,12 +1618,6 @@ async def get_status(request: Request) -> JSONResponse:
         started = _parse_iso_epoch(pending_attempt.timestamp)
         if started is not None:
             agent_pending_started_at[pending_attempt.agent_id] = started
-    agent_attempt_islands: dict[str, str] = {}
-    for attempt in sorted(attempts, key=lambda a: a.timestamp):
-        island_id = (attempt.metadata or {}).get("island_id")
-        if island_id is not None:
-            agent_attempt_islands[attempt.agent_id] = str(island_id)
-
     # Per-agent status
     agent_logs = list_log_files(coral_dir)
     run_usage = _aggregate_log_usage(coral_dir)
@@ -1741,14 +1656,11 @@ async def get_status(request: Request) -> JSONResponse:
         | set(agent_runtime_states)
         | set(agent_pid_map)
         | set(agent_eval_status)
-        | set(agent_attempt_islands)
     )
 
     for agent_id in all_agent_ids:
         logs = agent_logs.get(agent_id, [])
         latest = max(logs, key=lambda log: log["modified"]) if logs else None
-        island_id = (latest or {}).get("island_id") or agent_attempt_islands.get(agent_id)
-        island_id = str(island_id) if island_id is not None else None
         now = time.time()
         status_since = agent_pending_started_at.get(agent_id)
         if latest is not None:
@@ -1786,8 +1698,8 @@ async def get_status(request: Request) -> JSONResponse:
         desired_state = _read_agent_desired_state(coral_dir, agent_id)
         if runtime_state is not None and runtime_state.state in {"paused", "stopped"}:
             status = runtime_state.state
-        elif runtime_state is not None and runtime_state.state == "heartbeat" and eval_status is None:
-            status = "heartbeat"
+        elif runtime_state is not None and runtime_state.state == "reflect_loop" and eval_status is None:
+            status = runtime_state.state
             status_since = runtime_state.state_started_at or status_since
 
         agent_attempts = [a for a in attempts if a.agent_id == agent_id]
@@ -1797,7 +1709,6 @@ async def get_status(request: Request) -> JSONResponse:
         agents_status.append(
             {
                 "agent_id": agent_id,
-                "island_id": island_id,
                 "status": status,
                 "sessions": len(logs),
                 "last_activity": latest["modified"] if latest is not None else None,

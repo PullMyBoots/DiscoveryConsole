@@ -57,7 +57,7 @@ agents:
   runtime: claude_code               # "claude_code", "opencode", or "codex" (default: claude_code)
   model: sonnet                      # Model name or path (default: sonnet)
   max_turns: 0                       # Max agent turns per session (default: 0 = no cap)
-  timeout: 3600                      # Agent-level timeout in seconds (default: 3600)
+  timeout: 1200                      # Stall watchdog in seconds (default: 1200)
   research: true                     # Enable web search / literature review (default: true)
   stagger_seconds: 0                 # Delay between spawning each agent (default: 0)
   gateway:                           # LiteLLM gateway for routing model traffic
@@ -65,24 +65,6 @@ agents:
     port: 4000
     config: "./litellm_config.yaml"
     api_key: ""                      # Auto-generated if empty
-  heartbeat:                         # Periodic agent self-reflection actions
-    - name: reflect
-      every: 1                       # Trigger every N evals
-      global: false                  # false = per-agent count, true = global count
-      trigger: interval              # "interval" or "plateau"
-    - name: consolidate
-      every: 10
-      global: true
-      trigger: interval
-    - name: pivot
-      every: 5
-      trigger: plateau               # Triggers after N evals with no improvement
-
-sharing:
-  attempts: true                     # Share attempt history across agents (default: true)
-  notes: true                        # Share notes across agents (default: true)
-  skills: true                       # Share skills across agents (default: true)
-
 workspace:
   repo_path: "./examples/my_task/seed"  # Path to seed directory (default: ".")
   results_dir: "./results"              # Where run outputs are stored (default: ./results)

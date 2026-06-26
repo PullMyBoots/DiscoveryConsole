@@ -4,7 +4,7 @@ import { useSSE } from "../hooks/useSSE";
 import RunSelector from "./RunSelector";
 import { Icon, IconBadge, type IconName } from "./Ui";
 
-type Tab = "control" | "overview" | "knowledge" | "logs";
+type Tab = "control" | "overview" | "knowledge";
 
 interface Props {
   activeTab: Tab;
@@ -15,8 +15,11 @@ const tabs: { key: Tab; label: string; icon: IconName }[] = [
   { key: "control", label: "Control", icon: "control" },
   { key: "overview", label: "Overview", icon: "chart" },
   { key: "knowledge", label: "Knowledge", icon: "book" },
-  { key: "logs", label: "Logs", icon: "logs" },
 ];
+
+function isRunningAgentStatus(status: string): boolean {
+  return ["active", "evaluating", "waiting", "reflect_loop"].includes(status);
+}
 
 export default function Header({ activeTab, onTabChange }: Props) {
   const [status, setStatus] = useState<RunStatus | null>(null);
@@ -34,7 +37,7 @@ export default function Header({ activeTab, onTabChange }: Props) {
     "eval:update": refresh,
   });
 
-  const activeAgents = status?.agents.filter((a) => a.status === "active").length ?? 0;
+  const activeAgents = status?.agents.filter((agent) => isRunningAgentStatus(agent.status)).length ?? 0;
 
   return (
     <header className="sticky top-0 z-50 flex items-center gap-6 border-b border-border bg-background/92 px-6 py-2.5 backdrop-blur">

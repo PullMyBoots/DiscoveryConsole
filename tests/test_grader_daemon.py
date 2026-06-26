@@ -19,13 +19,14 @@ from coral.grader.daemon import (
     _find_pending,
     _is_git_repo,
     _repo_dir,
+    _self_history,
     planned_evaluating_hashes,
     process_pending_once,
     run_daemon,
 )
 from coral.hooks.post_commit import submit_eval
 from coral.hub.attempts import read_attempt, read_eval_count, write_attempt
-from coral.types import Attempt, Score
+from coral.types import Attempt
 
 # --------------------------------------------------------------------------- #
 # Fixtures                                                                    #
@@ -177,6 +178,307 @@ def test_process_pending_once_grades_pending():
 
             # No more pending after the drain.
             assert _find_pending(repo / ".coral") == []
+        finally:
+            sys.path.pop(0)
+
+
+def test_process_pending_once_routes_l3_final_to_c_space_grader():
+    """L3 final attempts use grader.final and are stamped as sealed C-space."""
+    with tempfile.TemporaryDirectory() as d:
+        repo = _init_repo_and_coral(Path(d), score=0.2)
+        _write_grader(
+            repo,
+            "from coral.grader.task_grader import TaskGrader\n"
+            "class Grader(TaskGrader):\n"
+            "    def evaluate(self):\n"
+            "        return 0.2\n"
+            "class FinalGrader(TaskGrader):\n"
+            "    def evaluate(self):\n"
+            "        assert self.eval_level == 'L3'\n"
+            "        assert self.eval_space == 'C'\n"
+            "        return 0.9\n",
+        )
+        cfg_path = repo / ".coral" / "config.yaml"
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f)
+        cfg["evaluation"] = {"level": "L3", "allow_loop_final": True}
+        cfg["grader"]["final"] = {
+            "entrypoint": "testgrader:FinalGrader",
+            "eval_version": "final_v1",
+            "profile": "sealed",
+        }
+        with open(cfg_path, "w") as f:
+            yaml.dump(cfg, f)
+
+        sys.path.insert(0, str(repo))
+        try:
+            (repo / "main.py").write_text("print('final')\n")
+            pending = submit_eval(
+                message="final",
+                agent_id="agent-1",
+                workdir=str(repo),
+                wait=False,
+                final=True,
+            )
+            assert pending.metadata["eval_level"] == "L3"
+            assert pending.metadata["eval_space"] == "C"
+            assert pending.metadata["eval_final"] is True
+
+            finalized = process_pending_once(repo / ".coral")
+            assert len(finalized) == 1
+            final = finalized[0]
+            assert final.score == 0.9
+            assert final.metadata["eval_level"] == "L3"
+            assert final.metadata["eval_space"] == "C"
+            assert final.metadata["eval_final"] is True
+            assert final.metadata["eval_version"] == "final_v1"
+            assert final.metadata["eval_profile"] == "sealed"
+        finally:
+            sys.path.pop(0)
+
+
+def test_l3_final_eval_disabled_by_default_in_agent_loop():
+    """C-space is sealed by default and not part of the agent eval loop."""
+    with tempfile.TemporaryDirectory() as d:
+        repo = _init_repo_and_coral(Path(d), score=0.2)
+        cfg_path = repo / ".coral" / "config.yaml"
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f)
+        cfg["evaluation"] = {"level": "L3"}
+        cfg["grader"]["final"] = {
+            "entrypoint": "testgrader:FinalGrader",
+            "eval_version": "final_v1",
+            "profile": "sealed",
+        }
+        with open(cfg_path, "w") as f:
+            yaml.dump(cfg, f)
+
+        (repo / "main.py").write_text("print('final')\n")
+        with pytest.raises(RuntimeError, match="disabled by default"):
+            submit_eval(
+                message="final",
+                agent_id="agent-1",
+                workdir=str(repo),
+                wait=False,
+                final=True,
+            )
+
+
+def test_process_pending_once_ignores_public_eval_space_tampering():
+    """Public attempt metadata cannot promote a normal L3 eval into C-space."""
+    with tempfile.TemporaryDirectory() as d:
+        repo = _init_repo_and_coral(Path(d), score=0.2)
+        _write_grader(
+            repo,
+            "from coral.grader.task_grader import TaskGrader\n"
+            "class Grader(TaskGrader):\n"
+            "    def evaluate(self):\n"
+            "        assert self.eval_level == 'L3'\n"
+            "        assert self.eval_space == 'B'\n"
+            "        return 0.2\n"
+            "class FinalGrader(TaskGrader):\n"
+            "    def evaluate(self):\n"
+            "        raise AssertionError('public metadata must not route into C-space')\n",
+        )
+        cfg_path = repo / ".coral" / "config.yaml"
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f)
+        cfg["evaluation"] = {"level": "L3"}
+        cfg["grader"]["final"] = {
+            "entrypoint": "testgrader:FinalGrader",
+            "eval_version": "final_v1",
+            "profile": "sealed",
+        }
+        with open(cfg_path, "w") as f:
+            yaml.dump(cfg, f)
+
+        sys.path.insert(0, str(repo))
+        try:
+            (repo / "main.py").write_text("print('normal l3')\n")
+            pending = submit_eval(
+                message="normal",
+                agent_id="agent-1",
+                workdir=str(repo),
+                wait=False,
+            )
+            attempt_file = repo / ".coral" / "public" / "attempts" / f"{pending.commit_hash}.json"
+            data = json.loads(attempt_file.read_text())
+            data["metadata"]["eval_space"] = "C"
+            data["metadata"]["eval_final"] = True
+            attempt_file.write_text(json.dumps(data))
+
+            finalized = process_pending_once(repo / ".coral")
+            assert len(finalized) == 1
+            final = finalized[0]
+            assert final.score == 0.2
+            assert final.metadata["eval_level"] == "L3"
+            assert final.metadata["eval_space"] == "B"
+            assert "eval_final" not in final.metadata
+            assert final.metadata["eval_version"] == "eval_v1"
+        finally:
+            sys.path.pop(0)
+
+
+def test_process_pending_once_augments_standard_eval_report():
+    """Daemon adds rank, top-k, self-history, baseline, and feedback summary."""
+    with tempfile.TemporaryDirectory() as d:
+        repo = _init_repo_and_coral(Path(d), score=0.2)
+        _write_grader(
+            repo,
+            "from coral.grader.task_grader import TaskGrader\n"
+            "class Grader(TaskGrader):\n"
+            "    def evaluate(self):\n"
+            "        return self.report_score(\n"
+            "            0.7,\n"
+            "            explanation='overall',\n"
+            "            accepted=True,\n"
+            "            metrics={\n"
+            "                'accuracy': {'value': 0.9, 'direction': 'maximize', 'explanation': 'correctness'},\n"
+            "                'latency': {'value': 12.0, 'direction': 'minimize', 'explanation': 'runtime'},\n"
+            "            },\n"
+            "            message_for_agent='Accuracy is strong; latency can improve.',\n"
+            "        )\n",
+        )
+        coral_dir = repo / ".coral"
+        write_attempt(
+            coral_dir,
+            Attempt(
+                commit_hash="baseline000",
+                agent_id="baseline",
+                title="baseline method",
+                score=0.4,
+                status="baseline",
+                parent_hash=None,
+                timestamp="2026-01-01T00:00:00+00:00",
+                metadata={"baseline": True, "baseline_name": "seed"},
+            ),
+        )
+        write_attempt(
+            coral_dir,
+            Attempt(
+                commit_hash="prev000",
+                agent_id="agent-1",
+                title="previous",
+                score=0.5,
+                status="improved",
+                parent_hash=None,
+                timestamp="2026-01-01T00:01:00+00:00",
+                metadata={
+                    "score_components": {
+                        "accuracy": {"value": 0.8, "name": "accuracy"},
+                        "latency": {"value": 15.0, "name": "latency", "metadata": {"direction": "minimize"}},
+                    }
+                },
+            ),
+        )
+
+        sys.path.insert(0, str(repo))
+        try:
+            (repo / "main.py").write_text("print('report')\n")
+            pending = submit_eval(
+                message="report",
+                agent_id="agent-1",
+                workdir=str(repo),
+                wait=False,
+            )
+            finalized = process_pending_once(coral_dir)
+            assert len(finalized) == 1
+            final = read_attempt(coral_dir, pending.commit_hash)
+            assert final is not None
+
+            report = final.metadata["eval_report"]
+            assert report["status"] == "success"
+            assert report["accepted"] is True
+            assert report["score"]["total"] == 0.7
+            assert report["score"]["rank"] == 1
+            assert report["score"]["top_k"][0]["commit_hash"] == pending.commit_hash
+            assert report["self_history"]["previous"] == 0.5
+            assert report["self_history"]["best_before"] == 0.5
+            assert report["self_history"]["mean_last_5"] == 0.5
+            assert report["self_history"]["delta_previous"] == pytest.approx(0.2)
+            assert report["self_history"]["delta_best_before"] == pytest.approx(0.2)
+            assert report["self_history"]["non_improving_streak"] == 0
+            assert report["baselines"][0]["name"] == "seed"
+            assert report["baselines"][0]["delta"] == pytest.approx(0.3)
+            assert report["metrics"]["accuracy"]["rank"] == 1
+            assert report["metrics"]["latency"]["rank"] == 1
+            assert "### Eval report" in final.feedback
+            assert "no_improve=0" in final.feedback
+            assert "delta_best=0.199" in final.feedback or "delta_best=0.2" in final.feedback
+            assert "Top 5:" in final.feedback
+            assert "Baselines:" in final.feedback
+        finally:
+            sys.path.pop(0)
+
+
+def test_self_history_counts_non_improving_streak_for_maximize_and_minimize():
+    maximize_attempts = [
+        Attempt("a1", "agent-1", "a1", 1.0, "completed", None, "2026-01-01T00:00:00Z"),
+        Attempt("a2", "agent-1", "a2", 0.9, "completed", None, "2026-01-01T00:01:00Z"),
+        Attempt("a3", "agent-1", "a3", 0.95, "completed", None, "2026-01-01T00:02:00Z"),
+    ]
+    current = Attempt("a4", "agent-1", "a4", 0.96, "completed", None, "2026-01-01T00:03:00Z")
+
+    history = _self_history([*maximize_attempts, current], current=current, minimize=False)
+
+    assert history["best_before"] == 1.0
+    assert history["non_improving_streak"] == 3
+
+    minimize_attempts = [
+        Attempt("b1", "agent-1", "b1", 10.0, "completed", None, "2026-01-01T00:00:00Z"),
+        Attempt("b2", "agent-1", "b2", 11.0, "completed", None, "2026-01-01T00:01:00Z"),
+        Attempt("b3", "agent-1", "b3", 10.5, "completed", None, "2026-01-01T00:02:00Z"),
+    ]
+    current = Attempt("b4", "agent-1", "b4", 9.5, "completed", None, "2026-01-01T00:03:00Z")
+
+    history = _self_history([*minimize_attempts, current], current=current, minimize=True)
+
+    assert history["best_before"] == 10.0
+    assert history["non_improving_streak"] == 0
+
+
+def test_process_pending_once_overwrites_grader_eval_report_route_fields():
+    """Grader-provided report fields cannot mislabel the executed eval space."""
+    with tempfile.TemporaryDirectory() as d:
+        repo = _init_repo_and_coral(Path(d), score=0.2)
+        _write_grader(
+            repo,
+            "from coral.grader.task_grader import TaskGrader\n"
+            "from coral.types import Score, ScoreBundle\n"
+            "class Grader(TaskGrader):\n"
+            "    def evaluate(self):\n"
+            "        return ScoreBundle(\n"
+            "            scores={'eval': Score(value=0.6, name='eval')},\n"
+            "            aggregated=0.6,\n"
+            "            metadata={'eval_report': {\n"
+            "                'status': 'success',\n"
+            "                'eval_level': 'L3',\n"
+            "                'eval_space': 'C',\n"
+            "                'eval_profile': 'sealed',\n"
+            "            }},\n"
+            "        )\n",
+        )
+        coral_dir = repo / ".coral"
+
+        sys.path.insert(0, str(repo))
+        try:
+            (repo / "main.py").write_text("print('route report')\n")
+            pending = submit_eval(
+                message="route report",
+                agent_id="agent-1",
+                workdir=str(repo),
+                wait=False,
+            )
+            finalized = process_pending_once(coral_dir)
+            assert len(finalized) == 1
+            final = read_attempt(coral_dir, pending.commit_hash)
+            assert final is not None
+            report = final.metadata["eval_report"]
+            assert final.metadata["eval_level"] == "L2"
+            assert final.metadata["eval_space"] == "B"
+            assert report["eval_level"] == "L2"
+            assert report["eval_space"] == "B"
+            assert report["eval_profile"] == "default"
         finally:
             sys.path.pop(0)
 
@@ -754,6 +1056,91 @@ def test_planned_evaluating_hashes_respects_parallel_resource_pool():
     assert planned_evaluating_hashes(pending, cfg) == {"h0", "h1"}
 
 
+def test_gpu_pool_defaults_to_one_gpu_per_eval_when_job_demand_unspecified():
+    cfg = CoralConfig.from_dict(
+        {
+            "task": {"name": "x", "description": "y"},
+            "grader": {
+                "parallel": {
+                    "max_workers": 4,
+                    "resources": {"gpu_count": 2, "gpu_ids": ["0", "1"]},
+                },
+            },
+        }
+    )
+    pending = [
+        Attempt(
+            commit_hash=f"h{i}",
+            agent_id=f"agent-{i}",
+            title="pending",
+            score=None,
+            status="pending",
+            parent_hash=None,
+            timestamp=f"2026-06-01T10:0{i}:00Z",
+        )
+        for i in range(4)
+    ]
+
+    assert planned_evaluating_hashes(pending, cfg) == {"h0", "h1"}
+
+
+def test_planned_evaluating_hashes_uses_private_eval_route_resources(tmp_path: Path):
+    cfg = CoralConfig.from_dict(
+        {
+            "task": {"name": "x", "description": "y"},
+            "evaluation": {"level": "L3", "allow_loop_final": True},
+            "grader": {
+                "entrypoint": "pkg:BGrader",
+                "resources": {"gpu_count": 1},
+                "final": {
+                    "entrypoint": "pkg:CGrader",
+                    "resources": {"gpu_count": 2},
+                },
+                "parallel": {
+                    "max_workers": 4,
+                    "resources": {"gpu_count": 2, "gpu_ids": ["0", "1"]},
+                },
+            },
+        }
+    )
+    coral_dir = tmp_path / ".coral"
+    (coral_dir / "private" / "eval_requests").mkdir(parents=True)
+    final_hash = "f" * 40
+    normal_hash = "b" * 40
+    (coral_dir / "private" / "eval_requests" / f"{final_hash}.json").write_text(
+        json.dumps(
+            {
+                "commit_hash": final_hash,
+                "eval_level": "L3",
+                "eval_space": "C",
+                "eval_final": True,
+            }
+        )
+    )
+    pending = [
+        Attempt(
+            commit_hash=final_hash,
+            agent_id="agent-final",
+            title="final",
+            score=None,
+            status="pending",
+            parent_hash=None,
+            timestamp="2026-06-01T10:00:00Z",
+        ),
+        Attempt(
+            commit_hash=normal_hash,
+            agent_id="agent-normal",
+            title="normal",
+            score=None,
+            status="pending",
+            parent_hash=None,
+            timestamp="2026-06-01T10:01:00Z",
+        ),
+    ]
+
+    assert planned_evaluating_hashes(pending, cfg, coral_dir=coral_dir) == {final_hash}
+
+
 def test_drain_limits_parallelism_by_gpu_resource_pool():
     """max_workers=4 but two available GPUs means only two evals overlap."""
     with tempfile.TemporaryDirectory() as d:
@@ -800,38 +1187,35 @@ def test_invalid_max_workers_rejected():
         )
 
 
-def test_find_pending_multi_island_scans_every_island(tmp_path):
-    """_find_pending picks up attempts from every islands/<id>/attempts/ dir."""
+def test_find_pending_scans_public_attempts(tmp_path):
+    """_find_pending picks up pending attempts from public/attempts/."""
     from coral.grader.daemon import _find_pending
     from coral.hub.attempts import write_attempt
     from coral.types import Attempt
 
     coral_dir = tmp_path / ".coral"
-    for i in range(3):
-        (coral_dir / "islands" / str(i) / "attempts").mkdir(parents=True)
+    (coral_dir / "public" / "attempts").mkdir(parents=True)
 
     a0 = Attempt(
         commit_hash="aaa000",
-        agent_id="0-agent-1",
+        agent_id="agent-1",
         title="x",
         score=None,
         status="pending",
         parent_hash=None,
         timestamp="2026-05-31T10:00:00Z",
-        metadata={"island_id": "0"},
     )
     a1 = Attempt(
         commit_hash="bbb111",
-        agent_id="1-agent-1",
+        agent_id="agent-2",
         title="y",
         score=None,
         status="pending",
         parent_hash=None,
         timestamp="2026-05-31T10:01:00Z",
-        metadata={"island_id": "1"},
     )
-    write_attempt(coral_dir, a0, island_id="0")
-    write_attempt(coral_dir, a1, island_id="1")
+    write_attempt(coral_dir, a0)
+    write_attempt(coral_dir, a1)
     pending = _find_pending(coral_dir)
     hashes = {a.commit_hash for a in pending}
     assert hashes == {"aaa000", "bbb111"}
@@ -978,105 +1362,8 @@ agents:
     assert seen == [("quick", 1), ("full", 3)]
 
 
-def test_grade_one_finalizes_migrated_pending_attempt_in_current_island(tmp_path, monkeypatch):
-    """If migration moves a pending attempt mid-grade, finalize into its current island."""
-    import coral.grader.daemon as daemon
-
-    coral_dir = tmp_path / ".coral"
-    for island in ("0", "1"):
-        (coral_dir / "islands" / island / "attempts").mkdir(parents=True)
-        (coral_dir / "islands" / island / "eval_logs").mkdir(parents=True)
-    (coral_dir / "public").mkdir(parents=True)
-
-    queued = Attempt(
-        commit_hash="abc123",
-        agent_id="0-agent-1",
-        title="queued before migration",
-        score=None,
-        status="pending",
-        parent_hash=None,
-        timestamp="2026-05-31T10:00:00Z",
-        metadata={"island_id": "0"},
-    )
-    write_attempt(coral_dir, queued, island_id="0")
-
-    moved = Attempt(
-        commit_hash="abc123",
-        agent_id="0-agent-1",
-        title="queued before migration",
-        score=None,
-        status="pending",
-        parent_hash=None,
-        timestamp="2026-05-31T10:00:00Z",
-        metadata={"island_id": "1"},
-    )
-    write_attempt(coral_dir, moved, island_id="1")
-    (coral_dir / "islands" / "0" / "attempts" / "abc123.json").unlink()
-    old_log = coral_dir / "islands" / "0" / "eval_logs" / "abc123" / "metrics.json"
-    old_log.parent.mkdir(parents=True)
-    old_log.write_text("{}")
-
-    config = CoralConfig.from_dict(
-        {
-            "task": {"name": "daemon_test", "description": "Daemon test"},
-            "grader": {
-                "timeout": 60,
-                "eval_version": "eval_v9",
-                "profile": "quick",
-                "resources": {"cpu_cores": 4, "memory_gb": 16, "gpu_count": 1},
-            },
-            "agents": {"count": 1},
-        }
-    )
-    config_path = coral_dir / "config.yaml"
-    config_path.write_text("task:\n  name: daemon_test\n  description: Daemon test\n")
-    repo = tmp_path / "repo"
-    repo.mkdir()
-
-    class Bundle:
-        aggregated = 0.9
-        feedback = "ok"
-        metadata = {"grader_key": "grader_value"}
-        scores = {
-            "breakthrough": Score(value=0.95, name="breakthrough", explanation="strong"),
-            "guardrail": Score(value=0.8, name="guardrail", explanation="acceptable"),
-        }
-
-    monkeypatch.setattr(daemon, "_repo_dir", lambda _coral_dir: repo)
-    monkeypatch.setattr(
-        daemon,
-        "_add_isolated_worktree",
-        lambda _repo_dir, _commit_hash, dest: dest.mkdir(parents=True, exist_ok=True),
-    )
-    monkeypatch.setattr(daemon, "_remove_worktree", lambda _repo_dir, _dest: None)
-    monkeypatch.setattr(daemon, "_run_grader", lambda *args, **kwargs: Bundle())
-
-    finalized = daemon._grade_one(queued, config_path, coral_dir, config)
-
-    assert finalized.status == "improved"
-    assert read_attempt(coral_dir, "abc123", island_id="0") is None
-    current = read_attempt(coral_dir, "abc123", island_id="1")
-    assert current is not None
-    assert current.score == 0.9
-    assert current.metadata["island_id"] == "1"
-    assert current.metadata["grader_key"] == "grader_value"
-    assert current.metadata["eval_version"] == "eval_v9"
-    assert current.metadata["eval_profile"] == "quick"
-    assert current.metadata["resources"]["CORAL_CPU_CORES"] == "4"
-    assert current.metadata["resources"]["CORAL_MEMORY_GB"] == "16"
-    assert current.metadata["resources"]["CORAL_GPU_COUNT"] == "1"
-    assert current.metadata["aggregated_score"] == 0.9
-    assert current.metadata["score_components"]["breakthrough"]["value"] == 0.95
-    assert current.metadata["score_components"]["guardrail"]["explanation"] == "acceptable"
-    assert read_eval_count(coral_dir, island_id="0") == 0
-    assert read_eval_count(coral_dir, island_id="1") == 1
-    assert read_eval_count(coral_dir) == 1
-    assert not (coral_dir / "islands" / "0" / "eval_logs" / "abc123").exists()
-    assert (coral_dir / "islands" / "1" / "eval_logs" / "abc123" / "metrics.json").exists()
-
-
-def test_find_pending_single_island_unchanged(tmp_path):
-    """Single-island: _find_pending scans only public/attempts/."""
+def test_find_pending_ignores_scored_attempts(tmp_path):
+    """_find_pending ignores already finalized attempts."""
     from coral.grader.daemon import _find_pending
     from coral.hub.attempts import write_attempt
     from coral.types import Attempt

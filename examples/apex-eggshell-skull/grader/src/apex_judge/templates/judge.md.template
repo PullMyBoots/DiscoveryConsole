@@ -25,7 +25,7 @@ You are the **evaluator** for this task. Your job is to deeply understand the ta
 
 {reference_section}
 
-## Agent Notes
+## Agent Practice Knowledge
 
 {agent_notes_context}
 
@@ -48,9 +48,9 @@ This step is critical. You cannot catch errors — whether in reasoning, methodo
 - Compare the agent's conclusions, reasoning, and factual claims against your reference answers from Step 1. Investigate any significant discrepancies.
 - **Verify the methodology, not just the results.** Check that the agent's approach actually implements the task's stated requirements and assumptions. If the task specifies constraints ("assume X remains constant," "use method Y"), verify the agent's method enforces them — not just that the agent restates them.
 
-### Step 3: Review Agent Notes
+### Step 3: Review Agent Practice Knowledge
 
-- Read the agent notes above (if any). The agent documents its findings, approach, and reasoning in notes.
+- Read the practice knowledge above (if any). The agent archives eval-linked findings, approach summaries, and reasoning there.
 - Consider: did the agent discover something important that the current rubric doesn't capture? Did the agent identify a nuance or concern worth evaluating?
 - Agent discoveries should inform your rubric evolution in Step 5.
 
@@ -75,7 +75,7 @@ When the agent meets every criterion, you must raise the bar or encourage the ag
 
 1. **Add 1-3 new criteria** targeting deeper quality dimensions. Draw on:
    - **Verification findings:** nuances in the source materials the agent didn't address, edge cases, deeper analysis opportunities
-   - **Agent notes:** ideas or concerns the agent raised that aren't yet captured in criteria
+   - **Agent practice knowledge:** ideas or concerns the agent raised that aren't yet captured in criteria
    - **Excellence dimensions:** what separates good from exceptional work for this task?
 2. **Self-check for bias.** Before finalizing new criteria, ask: "Do my criteria only reward one conclusion, or do they reward rigorous reasoning regardless of the conclusion reached?" Criteria should evaluate whether the agent considered alternatives and counterarguments — not whether it agreed with your view. Phrase criteria as "analyzes whether X" not "explains why X."
 3. **Retire up to 1 trivially-easy criterion** if you are near {max_criteria} active criteria, to make room for harder ones. **Never retire `[USER]` criteria** — these are user-defined and cannot be modified.
@@ -85,7 +85,7 @@ When the agent meets every criterion, you must raise the bar or encourage the ag
 **If some criteria FAIL — evolution is optional:**
 
 - Only evolve if you see a genuine reason (ambiguous criteria, missing dimensions, etc.).
-- Still consider agent notes for evolution ideas.
+- Still consider agent practice knowledge for evolution ideas.
 - Keep total active criteria between {min_criteria} and {max_criteria}.
 
 ### Step 6: Write Your Evaluation
@@ -154,8 +154,8 @@ These files will be cleaned up after evaluation.
 ### Worker Agents' Shared State
 | Path | Contents |
 |------|----------|
-| `.coral/attempts/*.json` | Scored commits (agent commit history) |
-| `{shared_dir}/knowledge/notes/*.md` | Findings and observations |
+| `.coral/public/attempts/*.json` | Scored commits (agent commit history) |
+| `{shared_dir}/knowledge/practice/` | Eval-linked method archive and reflections |
 | `{shared_dir}/skills/*/` | Reusable skills (SKILL.md + scripts/ + examples/) |
 
 ### CLI
@@ -177,23 +177,14 @@ coral log --agent {agent_id}         # Your history
 coral log --search "query"           # Search all attempts
 coral show <hash>                    # Details + diff for one attempt
 
-# Notes
-coral notes                       # List all entries (titles only)
-coral notes --recent 5            # Last N entries
-coral notes --search "keyword"    # Search by keyword
-coral notes --read N              # Read entry #N
-coral notes --read all            # Read entire file
+# Knowledge
+coral kb index practice --by score    # Score-ordered practice nodes
+coral kb index practice --by route    # Route summaries
+coral kb read <id>                    # Read a practice/manual/source item
 
 # Skills
 coral skills                         # List all skills with descriptions
 coral skills --read <name>           # Show skill details + files
-
-# Heartbeat
-coral heartbeat                      # Show your heartbeat actions
-coral heartbeat set reflect --every 3           # Reflect every 3 evals
-coral heartbeat set myaction --every 5 --prompt "..."  # Custom action
-coral heartbeat remove consolidate   # Remove an action
-coral heartbeat reset                # Reset to task defaults
 ```
 
 

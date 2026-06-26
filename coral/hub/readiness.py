@@ -7,8 +7,8 @@ from typing import Any
 
 import yaml
 
+from coral.cli.validation import validate_eval_spec_text
 from coral.config import CoralConfig
-from coral.hub._island import all_view_roots
 
 
 def build_control_readiness(coral_dir: str | Path) -> dict[str, Any]:
@@ -36,7 +36,6 @@ def build_control_readiness(coral_dir: str | Path) -> dict[str, Any]:
     )
 
     planned = _planned_agent_count(config)
-    island_count = _planned_island_count(config)
     topology_status, topology_detail = control_topology_status(config)
     checks.append(
         {
@@ -44,7 +43,7 @@ def build_control_readiness(coral_dir: str | Path) -> dict[str, Any]:
             "label": "Topology",
             "status": topology_status,
             "detail": topology_detail,
-            "count": island_count,
+            "count": planned,
         }
     )
 
@@ -81,7 +80,7 @@ def build_control_readiness(coral_dir: str | Path) -> dict[str, Any]:
         }
     )
 
-    from coral.hub.knowledge import list_knowledge_sources
+    from coral.hub.kb import index_external
 
     knowledge_dirs = _knowledge_dirs(coral_dir)
     eval_spec_status, eval_spec_detail, eval_spec_path, eval_spec_sections = _eval_spec_status(
@@ -98,12 +97,18 @@ def build_control_readiness(coral_dir: str | Path) -> dict[str, Any]:
         }
     )
 
-    manifest_paths = [knowledge_dir / "manifest.jsonl" for knowledge_dir in knowledge_dirs]
-    manifest = next((path for path in manifest_paths if path.exists()), manifest_paths[0])
-    sources = list_knowledge_sources(coral_dir)
-    if not any(path.exists() for path in manifest_paths):
+    index_paths = [knowledge_dir / "external" / "index.jsonl" for knowledge_dir in knowledge_dirs]
+    index_path = next((path for path in index_paths if path.exists()), index_paths[0])
+    sources = index_external(coral_dir)
+    knowledge_errors = _knowledge_source_errors(knowledge_dirs, sources)
+    if not any(path.exists() for path in index_paths):
         knowledge_status = "missing"
-        knowledge_detail = "knowledge/manifest.jsonl is missing"
+        knowledge_detail = "knowledge/external/index.jsonl is missing"
+    elif knowledge_errors:
+        knowledge_status = "missing"
+        preview = "; ".join(knowledge_errors[:3])
+        suffix = f" (+{len(knowledge_errors) - 3} more)" if len(knowledge_errors) > 3 else ""
+        knowledge_detail = f"knowledge index has invalid source(s): {preview}{suffix}"
     elif sources:
         knowledge_status = "ready"
         knowledge_detail = f"{len(sources)} source(s) indexed"
@@ -117,16 +122,28 @@ def build_control_readiness(coral_dir: str | Path) -> dict[str, Any]:
             "status": knowledge_status,
             "detail": knowledge_detail,
             "count": len(sources),
-            "path": str(manifest),
+            "path": str(index_path),
         }
     )
 
     attempts = _read_readiness_attempt_dicts(coral_dir)
     baselines = [attempt for attempt in attempts if _is_baseline_attempt_dict(attempt)]
-    if baselines:
+    valid_baselines = [
+        attempt
+        for attempt in baselines
+        if _baseline_attempt_has_score(attempt)
+        and _baseline_attempt_matches_eval(attempt, eval_version=eval_version, profile=profile)
+    ]
+    if valid_baselines:
         baseline_status = "ready"
-        scored = [attempt for attempt in baselines if attempt.get("score") is not None]
-        baseline_detail = f"{len(scored)}/{len(baselines)} scored baseline attempt(s)"
+        baseline_detail = f"{len(valid_baselines)}/{len(baselines)} scored baseline attempt(s) match eval identity"
+    elif baselines:
+        baseline_status = "missing"
+        scored = sum(1 for attempt in baselines if _baseline_attempt_has_score(attempt))
+        baseline_detail = (
+            f"{scored}/{len(baselines)} baseline attempt(s) have numeric scores and "
+            f"0 match {eval_version or 'missing eval_version'} / {profile or 'missing profile'}"
+        )
     else:
         baseline_status = "missing"
         baseline_detail = "No attempt marked with metadata.baseline/reference baseline"
@@ -143,59 +160,29 @@ def build_control_readiness(coral_dir: str | Path) -> dict[str, Any]:
     from coral.hub.plan import build_agent_plan
 
     agent_plan = build_agent_plan(coral_dir, config=config)
-    brief_count = int(agent_plan.get("brief_count") or 0)
-    if brief_count >= planned:
+    bundle_count = int(agent_plan.get("bundle_count") or 0)
+    missing_agent_ids = [str(item) for item in agent_plan.get("missing_agent_ids") or []]
+    if bundle_count >= planned:
         brief_status = "ready"
-    elif brief_count:
+    elif bundle_count:
         brief_status = "missing"
     else:
         brief_status = "missing"
+    bundle_detail = (
+        f"{bundle_count}/{planned} initialization bundle(s) with plan and executable eval script"
+    )
+    if missing_agent_ids:
+        bundle_detail += f"; missing: {', '.join(missing_agent_ids)}"
     checks.append(
         {
             "id": "agent_briefs",
-            "label": "Agent Briefs",
+            "label": "Agent Initialization Bundles",
             "status": brief_status,
-            "detail": f"{brief_count}/{planned} agent seed brief(s)",
-            "count": brief_count,
+            "detail": bundle_detail,
+            "count": bundle_count,
             "path": str((agent_plan.get("paths") or {}).get("agent_briefs", "")),
         }
     )
-
-    unique_theme_ids = {
-        str(island.get("island_id"))
-        for island in agent_plan.get("islands", [])
-        if island.get("island_id") is not None and island.get("theme")
-    }
-    if island_count > 1:
-        island_agent_status, island_agent_detail, covered_islands = _island_agent_coverage(
-            agent_plan,
-            island_count,
-        )
-        checks.append(
-            {
-                "id": "island_agents",
-                "label": "Island Agents",
-                "status": island_agent_status,
-                "detail": island_agent_detail,
-                "count": covered_islands,
-            }
-        )
-        if len(unique_theme_ids) >= island_count:
-            theme_status = "ready"
-        elif unique_theme_ids:
-            theme_status = "missing"
-        else:
-            theme_status = "missing"
-        checks.append(
-            {
-                "id": "island_themes",
-                "label": "Island Themes",
-                "status": theme_status,
-                "detail": f"{len(unique_theme_ids)}/{island_count} island theme brief(s)",
-                "count": len(unique_theme_ids),
-                "path": str((agent_plan.get("paths") or {}).get("island_themes", "")),
-            }
-        )
 
     overall = "ready"
     if any(check["status"] == "missing" for check in checks):
@@ -206,17 +193,9 @@ def build_control_readiness(coral_dir: str | Path) -> dict[str, Any]:
 
 
 def control_topology_status(config: dict[str, Any]) -> tuple[str, str]:
-    """Return readiness status for agent/island topology."""
+    """Return readiness status for the planned agent topology."""
     planned = _planned_agent_count(config)
-    island_count = _planned_island_count(config)
-    if island_count > planned:
-        return (
-            "missing",
-            f"islands.count ({island_count}) cannot exceed planned agents ({planned})",
-        )
-    if island_count > 1:
-        return "ready", f"{planned} planned agent(s) across {island_count} island(s)"
-    return "ready", f"{planned} planned agent(s) in single-island mode"
+    return "ready", f"{planned} planned agent(s)"
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -245,58 +224,43 @@ def _planned_agent_count(config: dict[str, Any]) -> int:
         return 1
 
 
-def _planned_island_count(config: dict[str, Any]) -> int:
-    islands = config.get("islands") if isinstance(config.get("islands"), dict) else {}
-    try:
-        return max(1, int(islands.get("count", 1)))
-    except (TypeError, ValueError):
-        return 1
-
-
-def _island_agent_coverage(agent_plan: dict[str, Any], island_count: int) -> tuple[str, str, int]:
-    """Verify every configured island has at least one Codex-prepared agent route."""
-    expected = {str(index) for index in range(island_count)}
-    covered: set[str] = set()
-    unexpected: set[str] = set()
-    for island in agent_plan.get("islands", []):
-        if not isinstance(island, dict):
-            continue
-        island_id = island.get("island_id")
-        agents = island.get("agents")
-        if island_id is None or not isinstance(agents, list) or not agents:
-            continue
-        normalized = str(island_id)
-        if normalized in expected:
-            covered.add(normalized)
-        else:
-            unexpected.add(normalized)
-
-    missing = sorted(expected - covered, key=_island_sort_key)
-    unexpected_sorted = sorted(unexpected, key=_island_sort_key)
-    if missing or unexpected_sorted:
-        details = []
-        if missing:
-            details.append(f"missing agent brief(s) for island(s): {', '.join(missing)}")
-        if unexpected_sorted:
-            details.append(f"unknown island id(s) in agent brief(s): {', '.join(unexpected_sorted)}")
-        return "missing", "; ".join(details), len(covered)
-    return "ready", f"{len(covered)}/{island_count} island(s) have agent brief(s)", len(covered)
-
-
-def _island_sort_key(value: str) -> tuple[int, int | str]:
-    return (0, int(value)) if value.isdigit() else (1, value)
-
-
 def _knowledge_dirs(coral_dir: Path) -> list[Path]:
     public = coral_dir / "public" / "knowledge"
-    dirs: list[Path] = []
-    if public.exists():
-        dirs.append(public)
-    for view_root in all_view_roots(coral_dir):
-        knowledge_dir = view_root / "knowledge"
-        if knowledge_dir not in dirs and knowledge_dir.exists():
-            dirs.append(knowledge_dir)
-    return dirs or [public]
+    return [public]
+
+
+def _knowledge_source_errors(
+    knowledge_dirs: list[Path],
+    sources: list[dict[str, Any]],
+) -> list[str]:
+    """Return hard launch errors for external-index knowledge sources."""
+    errors: list[str] = []
+    roots = [path.resolve() for path in knowledge_dirs if path.exists()]
+    for source in sources:
+        title = str(source.get("title") or source.get("id") or "external source")
+        rel = str(source.get("item_path") or "").strip()
+        if not rel:
+            errors.append(f"{title} has no item_path")
+            continue
+        if rel == "external/index.jsonl":
+            errors.append(f"{title} points at external/index.jsonl")
+            continue
+        source_md = f"{rel.rstrip('/')}/source.md"
+        if not _relative_source_exists(roots, source_md):
+            errors.append(f"{title} missing file {source_md}")
+    return errors
+
+
+def _relative_source_exists(roots: list[Path], relative_path: str) -> bool:
+    for root in roots:
+        candidate = (root / relative_path).resolve()
+        try:
+            inside_root = candidate.is_relative_to(root)
+        except ValueError:
+            inside_root = False
+        if inside_root and candidate.is_file():
+            return True
+    return False
 
 
 def _eval_spec_status(knowledge_dirs: list[Path]) -> tuple[str, str, Path | None, int]:
@@ -327,36 +291,21 @@ def _eval_spec_status_for_dir(knowledge_dir: Path) -> tuple[str, str, Path | Non
     except OSError:
         return "missing", f"{spec_path.name} cannot be read", spec_path, 0
 
-    normalized = text.lower()
-    sections = {
-        "breakthrough": ("breakthrough", "improve", "提升", "突破"),
-        "guardrail": ("guardrail", "safety", "保底", "兜底", "底线"),
-        "anti_cheating": (
-            "anti-cheat",
-            "anti cheating",
-            "cheat",
-            "overfit",
-            "leakage",
-            "作弊",
-            "过拟合",
-            "泄漏",
-        ),
-    }
-    matched = sum(
-        1 for keywords in sections.values() if any(keyword in normalized for keyword in keywords)
-    )
-    if matched == len(sections):
+    missing = validate_eval_spec_text(text)
+    total = 10
+    present = max(0, total - len(missing))
+    if not missing:
         return (
             "ready",
-            "eval spec covers breakthrough, guardrail, and anti-cheating checks",
+            "eval spec covers required sections, metrics, guardrails, and anti-cheating checks",
             spec_path,
-            matched,
+            present,
         )
     return (
         "missing",
-        f"eval spec found but only covers {matched}/{len(sections)} required section(s)",
+        "eval spec is missing required contract item(s): " + ", ".join(missing[:4]),
         spec_path,
-        matched,
+        present,
     )
 
 
@@ -372,17 +321,30 @@ def _is_baseline_attempt_dict(attempt: dict[str, Any]) -> bool:
     )
 
 
-def _read_readiness_attempt_dicts(coral_dir: Path) -> list[dict[str, Any]]:
-    """Read attempts relevant to launch readiness.
+def _baseline_attempt_has_score(attempt: dict[str, Any]) -> bool:
+    score = attempt.get("score")
+    return isinstance(score, (int, float)) and not isinstance(score, bool)
 
-    In multi-island runs normal agent attempts live under `islands/<id>/attempts`,
-    while Codex-prepared reference records such as seed baselines are run-global
-    and may live under `public/attempts`. Read both scopes so readiness matches
-    the workbench contract.
-    """
+
+def _baseline_attempt_matches_eval(
+    attempt: dict[str, Any],
+    *,
+    eval_version: str,
+    profile: str,
+) -> bool:
+    metadata = attempt.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        return False
+    return (
+        str(metadata.get("eval_version") or "") == eval_version
+        and str(metadata.get("eval_profile") or metadata.get("profile") or "") == profile
+    )
+
+
+def _read_readiness_attempt_dicts(coral_dir: Path) -> list[dict[str, Any]]:
+    """Read attempts relevant to launch readiness."""
     import json
 
-    from coral.hub.attempts import _read_all_island_attempts
     from coral.types import Attempt
 
     attempts: list[Attempt] = []
@@ -392,7 +354,6 @@ def _read_readiness_attempt_dicts(coral_dir: Path) -> list[dict[str, Any]]:
             attempts.append(Attempt.from_dict(json.loads(path.read_text())))
         except (OSError, json.JSONDecodeError, KeyError):
             continue
-    attempts.extend(_read_all_island_attempts(coral_dir))
     seen: set[str] = set()
     result: list[dict[str, Any]] = []
     for attempt in attempts:

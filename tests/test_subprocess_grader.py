@@ -2,7 +2,7 @@
 
 Uses the current Python interpreter as the worker (CORAL's own venv) and
 injects a fixture grader via PYTHONPATH. Real grader-venv tests live in
-test_grader_env.py + the migrated example smoke tests.
+test_grader_env.py + the converted example smoke tests.
 """
 
 from __future__ import annotations
@@ -198,57 +198,3 @@ def test_subprocess_grader_timeout_raises_timeout_error(pythonpath_with: Path) -
     )
     with pytest.raises(TimeoutError, match="timed out"):
         _grade(grader, str(pythonpath_with))
-
-
-def test_subprocess_grader_propagates_island_id(pythonpath_with: Path) -> None:
-    """Regression: the inner grader must see ``island_id`` on ``self`` so it
-    can scope hub reads (e.g. ``read_attempts(coral_dir, island_id=...)``)
-    in multi-island runs. Pre-fix, the worker payload didn't include
-    ``island_id`` and multi-island graders crashed with
-    ``ValueError: island_id is required in multi-island runs``."""
-    _write_fixture_grader(
-        pythonpath_with,
-        """
-        from coral.grader import TaskGrader
-
-        class Grader(TaskGrader):
-            def evaluate(self) -> float:
-                # The inner grader.grade() should have set self.island_id
-                # from the kwargs the parent passed.
-                assert self.island_id == self.args["expect_island_id"]
-                return 0.0
-        """,
-    )
-    grader = SubprocessGrader(
-        entrypoint="fixture_grader:Grader",
-        worker_python=Path(sys.executable),
-        config=GraderConfig(args={"expect_island_id": "2"}),
-        private_dir=str(pythonpath_with),
-    )
-    bundle = asyncio.run(grader.grade(str(pythonpath_with), [], island_id="2"))
-    assert bundle.aggregated == 0.0
-
-
-def test_subprocess_grader_island_id_defaults_to_none(pythonpath_with: Path) -> None:
-    """Single-island mode (no ``island_id`` kwarg) must leave
-    ``self.island_id`` at None so single-island graders behave exactly as
-    before. The legacy payload shape (no ``island_id`` key) is preserved."""
-    _write_fixture_grader(
-        pythonpath_with,
-        """
-        from coral.grader import TaskGrader
-
-        class Grader(TaskGrader):
-            def evaluate(self) -> float:
-                assert self.island_id is None
-                return 0.0
-        """,
-    )
-    grader = SubprocessGrader(
-        entrypoint="fixture_grader:Grader",
-        worker_python=Path(sys.executable),
-        config=GraderConfig(),
-        private_dir=str(pythonpath_with),
-    )
-    bundle = _grade(grader, str(pythonpath_with))
-    assert bundle.aggregated == 0.0

@@ -8,7 +8,7 @@ Codex is the bridge between the user and CORAL.
 
 - The user owns high-level decisions: what matters, what tradeoffs are acceptable, when a result is useful, and whether the scientific claim is credible.
 - Codex owns concrete work: research framing, knowledge gathering, implementation, eval design, baseline recording, agent planning, workspace preparation, dashboard setup, and post-run analysis.
-- CORAL owns execution: parallel agent search, attempts, eval queueing, sharing, heartbeat, migration, and runtime state inside one timestamp.
+- CORAL owns execution: parallel agent search, attempts, eval queueing, sharing, process control, and runtime state inside one timestamp.
 
 Do not make the user act as a YAML author or low-level scheduler. Ask for decisions, preferences, and judgment; hide mechanics unless the user asks.
 
@@ -51,12 +51,18 @@ When the user gives feedback during a run:
 - If the run is active, decide whether the feedback is urgent enough to pause.
 - If the run is paused or stopped, write broad steering feedback to `.coral/public/control/next_instruction.md`.
 - For targeted feedback, use per-agent control only as an advanced intervention.
-- Do not silently edit the eval, agent seed briefs, or island themes after attempts exist without treating this as a new experimental condition.
+- If the user's critique should replace one agent's short-term plan, reset that
+  agent's notebook with `coral kb notebook --agent <agent-id> --set <file>
+  --reason external-adjustment --by codex` so the old notebook is archived with
+  provenance.
+- If the user wants knowledge added or removed, use `coral kb add external ...`
+  or `coral kb remove <src-id>` instead of editing the external source tree by
+  hand.
+- Do not silently edit the eval or agent initialization bundles after attempts exist without treating this as a new experimental condition.
 
 Feedback scopes:
 
 - Run-level: inject on next resume to all agents.
-- Island-level: summarize as a note and, if supported, target the relevant island.
 - Agent-level: use targeted prompt/control only when the user explicitly wants one agent interrupted.
 
 ## Decision Boundaries

@@ -149,7 +149,8 @@ One subtlety: if you symlink the worker's codebase into the judge workspace (as 
 
 ```bash
 coral validate examples/race-japan-elderly
-coral start -c examples/race-japan-elderly/task.yaml
+coral prepare -c examples/race-japan-elderly/task.yaml
+coral start -c results/<task>/latest/.coral/config.yaml
 ```
 
 `coral validate` will install the grader package into a fresh venv and dry-run it. Actual judge spawning only happens on a real `coral eval`, since the judge is an LLM call that the validator cannot stub.

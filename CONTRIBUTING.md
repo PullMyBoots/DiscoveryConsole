@@ -60,7 +60,7 @@ hooks, manager, workspace, hub, template, config, web).
 CORAL's architecture, directory layout, and core types are summarised in
 [CLAUDE.md](CLAUDE.md) at the repo root. Skim it before making non-trivial
 changes — it covers the eval loop, `.coral/{public,private}/` split, the
-grader daemon, heartbeats, and the runtime registry.
+grader daemon, knowledge CLI, and the runtime registry.
 
 ## Branches and commits
 

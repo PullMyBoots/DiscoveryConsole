@@ -14,10 +14,6 @@ Show these as simple controls:
 - network permission
 - eval profile
 - total evaluator CPU/GPU/memory budget via `grader.parallel.resources`
-- single-island vs multi-island
-- island count or intensity preset, capped at the planned agent count
-- migration on/off and cadence via `islands.migration.every`
-- heartbeat intensity preset, not raw heartbeat action YAML
 - score chart metric, order, and range controls
 
 ## Codex-Owned Setup
@@ -27,8 +23,7 @@ Do not expose these as ordinary panel edits:
 - exact agent count after workspace generation
 - `agents.max_turns` as a normal runtime budget control
 - per-agent initial technical direction
-- per-agent initialization script
-- island theme text
+- per-agent first-eval scripts
 - grader entrypoint
 - grader direction (`maximize` / `minimize`)
 - raw setup commands
@@ -37,16 +32,13 @@ Do not expose these as ordinary panel edits:
 - baseline implementation details
 - knowledge file placement
 
-Show these as a read-only plan preview. The Agent Plan reads island themes from
-`.coral/public/knowledge/briefs/islands/*.md` or `island-themes/*.md` and agent
-briefs from `.coral/public/knowledge/briefs/agent-seeds/*.md`. If the user
-dislikes the plan, Codex should regenerate the workspace/plan before launch.
-In multi-island mode, readiness must report `missing` until each configured
-island has at least one agent brief.
+Show these as a read-only plan preview. The Agent Plan reads initialization bundles from
+`.coral/public/knowledge/briefs/agent-seeds/*.md`. If the user dislikes the
+plan, Codex should regenerate the workspace/plan before launch.
 
 The Knowledge panel may let the user capture review notes and proposed sources,
 and mark run-global manifest references as accepted/rejected/archived. It must
-not silently delete source files or mutate island-private knowledge.
+not silently delete source files or mutate source knowledge.
 It may also expose `.coral/public/knowledge/eval_spec.md` as a markdown editor
 so the user/Codex can review or revise the trust argument before a fresh
 timestamp run. Saving this file should not mutate prior attempts or silently
@@ -61,14 +53,10 @@ The Overview chart may expose:
 
 The Overview agent cards should expose:
 
-- island grouping for multi-island runs, backed by `/api/status` agent
-  `island_id`
-- visible status: `active`, `idle`, `evaluating`, `waiting`, `heartbeat`,
-  `paused`, or `stopped`
+- visible state: `work_loop`, `reflect_loop`, `waiting eval`, `paused`, or
+  `stopped`
 - `evaluating` means the grader is currently running that attempt
 - `waiting` means the attempt is queued behind another grader job
-- `heartbeat` means CORAL interrupted and resumed the agent with heartbeat
-  feedback; queued/running eval status takes priority over heartbeat
 - active duration, time since last output, and status duration where available
 - current queued/running eval job with progress when one belongs to that agent
 - latest few attempts with status, commit, title, and the currently selected
@@ -80,7 +68,6 @@ Once agents have run, ordinary UI should not mutate:
 
 - agent count
 - executor/runtime backend for an existing agent
-- island topology
 - worktree locations
 - grader direction used to interpret scores
 - eval version used for existing attempts

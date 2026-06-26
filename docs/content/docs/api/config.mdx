@@ -71,30 +71,13 @@ class AgentConfig:
     runtime: str           # "claude_code", "codex", "opencode"
     model: str             # Model name or ID (default: "sonnet")
     max_turns: int         # Max conversation turns (default: 200)
-    timeout: int           # Session timeout in seconds (default: 3600)
+    timeout: int           # Stall watchdog in seconds (default: 1200)
     research: bool         # Enable web search (default: True)
-    heartbeat: list[HeartbeatActionConfig]  # Periodic actions
-```
-
-## HeartbeatActionConfig
-
-```python
-@dataclass
-class HeartbeatActionConfig:
-    name: str              # Action name (e.g. "reflect")
-    every: int             # Trigger every N evals
-    is_global: bool        # Use global eval count (default: False)
 ```
 
 ## SharingConfig
 
-```python
-@dataclass
-class SharingConfig:
-    attempts: bool         # Share attempt scores (default: True)
-    notes: bool            # Enable shared notes (default: True)
-    skills: bool           # Enable shared skills (default: True)
-```
+`sharing.*` toggles are deprecated and true-only for old configs. New tasks should omit the section; CORAL always exposes one fixed public shared state model through the runtime shared directory and `coral kb`.
 
 ## WorkspaceConfig
 

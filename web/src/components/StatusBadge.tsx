@@ -13,7 +13,7 @@ const styles: Record<string, string> = {
     "border border-success/30 bg-success-soft text-success",
   evaluating:
     "border border-accent/30 bg-accent-soft text-accent-fg",
-  heartbeat:
+  reflect_loop:
     "border border-info/35 bg-info-soft text-info",
   waiting:
     "bg-surface-muted text-muted-fg border border-border",
@@ -30,7 +30,7 @@ const labels: Record<string, string> = {
   idle: "running",
   waiting: "waiting",
   evaluating: "evaluating",
-  heartbeat: "heartbeat",
+  reflect_loop: "reflect_loop",
   paused: "paused",
   stopped: "stopped",
 };
