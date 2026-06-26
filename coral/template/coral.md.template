@@ -132,6 +132,14 @@ Before writing code, decide what to try next. This is where your creativity matt
 - What's the simplest change that might improve the score?
 - What did the feedback from recent evals tell you?
 
+**Classify the next move before editing.** Say in your notebook whether this is
+a mechanism/algorithm change, an engineering optimization, a parameter/config
+sweep, a seed/data-selection probe, or a diagnostic. Parameter tuning can be
+legitimate work, especially in fixed L1 engineering tasks, but in L2/L3 it is
+also a common way to overfit A-space. If the plan is mostly tuning, state what
+mechanism you think the knob controls and what stronger evidence would make the
+gain credible.
+
 Keep plans lightweight — a few sentences, not a document. The goal is to have a clear idea before you start editing.
 
 ## {edit_step_num}. Edit
@@ -158,9 +166,15 @@ bundle.
 
 This stages all changes, commits with your message, and runs the grader. Your message becomes the title of the attempt record and is full-text searchable by every agent. Write something descriptive: "try grouped query attention with 8 heads" is useful, "update" is not.
 
+Your eval message must name the change type: mechanism change, engineering
+optimization, parameter/config tuning, seed/data-selection probe, or diagnostic.
+If the attempt mainly changes constants, thresholds, hyperparameters, prompts,
+sampling choices, or resource knobs, say so explicitly. Do not disguise local
+tuning as a substantive method improvement.
+
 **Eval often.** Don't spend a long time coding without evaluating. Every eval gives you real signal about what works. If you're unsure whether a change helps, just eval it — you can always revert or checkout a previous version.
 
-After every eval, record the immediate observation in your notebook with `coral kb note`. The reflect loop archives successful real evals into the practice chain with the score, eval report, git commit pointer, method summary, and reflection.
+After every eval, record the immediate observation in your notebook with `coral kb note`. Include whether the gain looks like a mechanism improvement, valid engineering tuning, local A-space fitting, or noise. The reflect loop archives successful real evals into the practice chain with the score, eval report, git commit pointer, method summary, and reflection.
 
 **Important:** `coral eval` is the only way to get an official score. The grader runs your code in a separate process with independent verification — running your program directly may give different results.
 
@@ -212,14 +226,22 @@ You are part of a team. When you learn something, use the knowledge CLI instead 
 - Code inspection for another agent's attempt: `coral show <commit> --diff`.
 - Reflect-loop archive after a successful real eval: `coral kb archive --attempt <hash> --agent {agent_id} --route "..." --method "..." --reflection "..."`.
 
+In the `--reflection`, answer: did the score change come from a substantive
+method/mechanism change, an engineering optimization, or parameter/config
+tuning? Is the improvement expected to transfer beyond the current A-space or
+quick profile? Does it need B/full/stress validation before others should trust
+it? For L1 fixed engineering tasks, tuning can be a valid result; for L2/L3,
+tuning-only gains should be marked as `needs-validation` unless stronger
+evidence confirms them.
+
 Do not browse or rewrite the whole knowledge tree. The durable path is index -> read -> act.
 
 ### Skills Across Loops
 
 Skills are shared through `{shared_dir}/skills/`. Treat them as reusable tools and workflows, not as a separate identity system.
 
-- **work_loop:** read and use existing skills when they help the current plan. You may create a small draft skill or helper script while exploring if it directly supports the current eval, but keep the notebook as the main work memory.
-- **reflect_loop:** after a successful real eval, promote what was actually validated into a durable shared skill. Create or update a skill only when the technique, script, diagnostic, or workflow is reusable by you or another agent.
+- **work_loop:** read and use existing skills when they help the current plan. You may create a small draft skill or helper script while exploring if it directly supports the current eval, but keep the notebook as the main work memory. Before each eval, classify the attempt as mechanism change, engineering optimization, tuning, probe, or diagnostic.
+- **reflect_loop:** after a successful real eval, promote what was actually validated into a durable shared skill. Create or update a skill only when the technique, script, diagnostic, or workflow is reusable by you or another agent. Also decide whether the gain is transferable or merely tuned to the current scoring surface.
 
 Skill skeleton:
 ```

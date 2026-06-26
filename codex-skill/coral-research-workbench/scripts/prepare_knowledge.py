@@ -62,7 +62,15 @@ def prepare(path: Path) -> None:
             "# Agent Work And Reflect Loops\n\n"
             "work_loop implements or diagnoses one candidate route, then submits "
             "evidence with `coral eval`. reflect_loop turns a real eval result "
-            "into durable practice knowledge with `coral kb archive --attempt ...`.\n"
+            "into durable practice knowledge with `coral kb archive --attempt ...`.\n\n"
+            "In work_loop, classify each attempt before eval: mechanism change, "
+            "engineering optimization, parameter/config tuning, seed/data probe, "
+            "or diagnostic. Tuning can be legitimate in fixed L1 engineering "
+            "tasks, but in L2/L3 it is also a common A-space overfitting path.\n\n"
+            "In reflect_loop, never record only `score improved`. Explain whether "
+            "the gain came from a transferable mechanism, valid engineering "
+            "tuning, local scoring-surface fit, or noise. Mark tuning-only gains "
+            "as `needs-validation` unless B/full/stress evidence supports them.\n"
         ),
         "evaluation-spaces.md": (
             "# Evaluation Spaces\n\n"
