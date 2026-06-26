@@ -6,6 +6,42 @@ Use this reference when designing the evaluation philosophy for open-ended resea
 
 The scalar score is not just a number. It is the argument that a discovered result is better. CORAL's scheduler optimizes this scalar, so the scalar must be designed to resist misleading progress.
 
+## Evaluation Level And Evidence Ladder
+
+Choose L1/L2/L3 by asking what environment the result must work in. The
+evaluation level is a research-design decision, not a runtime knob.
+
+- L1 fits very fixed scenarios: the goal is to optimize a known component,
+  program step, script, kernel, or benchmark path under an open scoring
+  contract. There is little room for a hidden generalization claim because the
+  task is defined by the fixed contract itself.
+- L2 fits fixed task families where overfitting to public probes is the main
+  threat. A-space can be open for exploration, but B-space should be hidden,
+  representative, and mature enough to decide ranking or acceptance.
+- L3 fits open-world or deployment-uncertain claims. A/B can guide search and
+  compare candidates, but they may still select a method that overfits the
+  validation regime or lands in a local optimum. C-space is the sealed final
+  validation closest to the real use environment.
+
+The more certain and closed the target environment is, the more appropriate L1
+becomes. The more uncertain, open, or deployment-dependent it is, the more
+appropriate L3 becomes.
+
+When generalization matters, do not treat A/B/C as arbitrary random splits from
+one distribution. Design them as a continuous evidence ladder:
+
+- A-space: cheap, open, and learnable enough for agents to optimize, but not
+  so simple that it becomes disconnected from the real problem.
+- B-space: hidden and more representative, used to detect overfitting to A
+  while preserving enough continuity that A improvements can transfer.
+- C-space: sealed and closest to the final deployment or scientific claim,
+  used only for final validation outside the normal CORAL loop.
+
+Avoid discontinuities. If A is too primitive and B is much harder, the search
+loop has no reliable optimization signal. If B and C are too different, the
+B-space winner may not support the final claim. The goal is a deliberate
+increase in realism and difficulty, not a cliff.
+
 ## Metric Groups
 
 Use two metric groups plus hard failures:

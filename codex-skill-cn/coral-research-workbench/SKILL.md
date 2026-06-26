@@ -125,7 +125,15 @@ python "${CODEX_HOME:-$HOME/.codex}/skills/coral-research-workbench/scripts/chec
 - L2：开放 A 空间探索，隐藏 B 空间排名评估。
 - L3：开放 A 空间加隐藏 B 空间迭代，并在常规 CORAL 循环外使用封闭 C 空间做最终验证。
 
-对一个任务而言，L1/L2/L3 不是三个并行设置。选择与研究问题和部署场景匹配的级别。
+对一个研究问题而言，L1/L2/L3 不是三个并行设置，也不是运行时可调旋钮。用户和 Codex 一旦确定“要研究什么”以及“结果要支撑什么主张”，这个问题理论上就应当按研究设计匹配一个评估级别。核心判据是目标环境的确定性：越固定、越封闭、越明确的场景，越靠近 L1；越开放、越不确定、越依赖真实部署环境的场景，越靠近 L3。
+
+- L1：适合高度固定的场景，例如优化某个已知程序环节、kernel、脚本或 benchmark 组件。计分契约是开放的，真正目标就是在这个契约下直接改进。
+- L2：适合场景仍然固定、评估体系足够成熟，但公开 probe 容易导致过拟合的问题。Agent 可以在 A-space 探索；隐藏的 B-space 负责排名或接受判断。
+- L3：适合开放世界或部署环境不确定的主张。A/B 证据可以帮助搜索和筛选，但 B-space 上的 winner 仍可能只是验证体系上的局部最优或过拟合结果，因此 C-space 必须封闭，并用于常规 agent loop 之外的最终人类/Codex 验证。
+
+如果研究主张包含泛化性，A/B/C 不能被当作同一分布里的随意随机切分。它们应当被设计成逐级增强的证据阶梯：A 要便宜、可学习、足以提供优化信号，但不能简单到和真实问题脱节；B 要更具代表性并保持隐藏，用来检验对 A 的过拟合；C 要最接近真实目标环境或最终科学主张。A 到 B、B 到 C 的差距应当是有意设计的，但不能断档。A 太简单或 B/C 距离太远，都会让 agent 无法优化，也会让最终证据难以解释。
+
+不要把同一个研究问题做成“先试 L1，再试 L2，再试 L3”。如果后来发现评估级别判断错了，应把它视为研究设计改变：fork 新的 task version 或 timestamp lineage，记录新的 eval contract，并且不要把新旧分数当作同一实验直接比较。
 
 把人类可读的信任论证写入 `knowledge/eval_spec.md`。如果已有 attempt 后评估含义发生变化，先启动新 timestamp，或在一个冻结评估下重新运行选定 attempt，再比较分数。
 
@@ -199,7 +207,7 @@ coral start -c <timestamp>/.coral/config.yaml
 
 运行期间，让用户观察进展、暂停/恢复整个运行，并可选发送下一次恢复指令。如果用户在暂停或停止期间给出反馈，将运行级 steering 保存到 `.coral/public/control/next_instruction.md`。对于定向的逐 agent 批评，用 `coral kb notebook --agent <agent-id> --set <file> --reason external-adjustment --by codex` 重置该 agent 的 notebook。只通过 `coral kb add external ...` 和 `coral kb remove <src-id>` 添加或归档外部知识。已有 attempt 后，不要静默重写评估语义、隐藏数据或 agent 初始化包。
 
-一旦 timestamp 有活动，就锁定 executor/runtime backend、grader direction、eval version 和 route topology。在安全时，保持 model、eval profile、resource budget、deadline 和 next-resume instruction 可编辑。
+一旦 timestamp 有活动，就锁定 evaluation level、executor/runtime backend、grader direction、eval version 和 route topology。在安全时，保持 model、eval profile、resource budget、deadline 和 next-resume instruction 可编辑。
 
 ### 8. 审查、提升或 Fork
 

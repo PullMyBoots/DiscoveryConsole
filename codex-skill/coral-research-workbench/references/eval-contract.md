@@ -20,21 +20,56 @@ Use this reference before writing or changing a CORAL grader for research search
 
 ## Evaluation Level
 
-Choose one level with the user before writing the grader. The choice depends on
-the task and intended claim; L1/L2/L3 are alternatives for a fixed task, not
-three simultaneous modes.
+Choose one level with the user before writing the grader. This is a
+task-level research-design contract, not a runtime preference. Once the
+research question, deployment scenario, and intended claim are defined, the
+question should match one level by design; L1/L2/L3 are alternatives for a
+fixed task, not three simultaneous modes and not trial settings.
+
+Use environment certainty as the main decision axis. The more fixed,
+closed, and fully specified the target scenario is, the more appropriate L1
+is. The more uncertain, open-ended, or deployment-dependent the target
+environment is, the more appropriate L3 is.
 
 - L1: fixed/open scenario. The A-space scoring mechanism is public to agents.
-  Use this for tasks where the goal is direct program optimization against a
-  known objective.
-- L2: open exploration with hidden ranking. Agents can probe A-space, but
-  official ranking uses B-space to reduce overfitting to public probes.
-- L3: strict research validation. Agents iterate with A/B, while C-space is
-  sealed for final human/Codex validation after the CORAL run. CORAL stores the
-  C-space assets, but the normal agent eval loop should not expose or run them.
+  Use this for tasks where the goal is direct optimization against a known
+  objective: accelerating a fixed component, improving a fixed benchmark path,
+  or optimizing a program under a fully specified contract. Cheating and
+  overfitting risk still need guardrails, but there is no separate hidden
+  generalization claim.
+- L2: fixed scenario with overfitting risk. Use this when the evaluation
+  tradition is mature enough that representative hidden data can be generated
+  or held out, such as simulation-based statistical methods, stable algorithm
+  benchmarks, or fixed task families. Agents explore A-space, while hidden
+  B-space decides ranking or acceptance to prevent overfitting to public probes.
+- L3: open-world or deployment-uncertain validation. Use this when A/B evidence
+  is useful for search but cannot fully justify the final claim. The best
+  B-space candidate may still be overfit to the validation regime or trapped in
+  a local optimum. Keep C-space sealed for final human/Codex validation after
+  the CORAL run; the normal agent eval loop must not expose or run it.
 
 The selected level should be written in `knowledge/eval_spec.md` with the
 allowed agent API and the hidden boundary for that task.
+
+If generalization is part of the claim, A/B/C spaces should form a graded
+evidence ladder rather than a naive random split from one distribution:
+
+- A-space should be cheap, open, and simple enough to provide optimization
+  signal, but not so toy-like that progress there becomes irrelevant.
+- B-space should be hidden and more representative of the target scenario,
+  with enough continuity from A that improvements can transfer.
+- C-space, when used, should be closest to the real deployment or final claim
+  environment and should remain sealed until final validation.
+
+The gaps between A and B, and between B and C, should be deliberate but not
+discontinuous. If A is too easy or too unlike B, agents cannot learn useful
+directions. If B is too unlike C, the selected winner may fail exactly where
+the result must be credible.
+
+Do not use the same research question to "try L1, then L2, then L3." If the
+level changes, the research design has changed. Start a new task version or
+timestamp lineage, record a new eval contract, and avoid direct score
+comparison with attempts produced under the earlier level.
 
 Before launch, write the human-readable trust argument to
 `knowledge/eval_spec.md`. It must cover:

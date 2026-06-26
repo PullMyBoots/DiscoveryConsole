@@ -133,7 +133,37 @@ Choose exactly one evaluation level with the user before writing the grader:
 - L2: open A-space exploration, hidden B-space ranking eval.
 - L3: open A-space plus hidden B-space iteration, with sealed C-space final validation outside the normal CORAL loop.
 
-For one task, L1/L2/L3 are not three parallel settings. Pick the level that matches the research question and deployment scenario.
+For one research question, L1/L2/L3 are not three parallel settings and not
+runtime tuning knobs. Once the user and Codex have defined what is being
+studied and what claim the result should support, the question should match one
+level by design. The guiding axis is environment certainty: the more fixed and
+closed the target scenario is, the more the task belongs near L1; the more
+open, uncertain, or deployment-dependent the scenario is, the more it belongs
+near L3.
+
+- L1: use for highly fixed scenarios such as optimizing a known program step,
+  kernel, script, or benchmark component. The scoring contract is open and the
+  meaningful goal is direct improvement under that contract.
+- L2: use when the scenario is still fixed enough to simulate or benchmark
+  credibly, but public probes would invite overfitting. Agents may explore
+  A-space; hidden B-space decides ranking or acceptance.
+- L3: use when the claim must survive open-world or uncertain deployment.
+  A/B evidence is useful for search, but a B-space winner may still be a local
+  optimum or overfit to the validation regime, so sealed C-space is reserved
+  for final human/Codex validation outside the normal agent loop.
+
+When generalization matters, A/B/C are not arbitrary same-distribution splits.
+Design them as a graded evidence ladder: A should be cheap and learnable enough
+to guide optimization without being toy-like; B should be more representative
+and hidden enough to test overfitting; C should be closest to the real target
+environment. The gaps should be deliberate but not discontinuous. If A is too
+simple or B/C are too far away, agents cannot learn useful directions and the
+final evidence becomes hard to interpret.
+
+Do not run the same research question as "try L1, then try L2, then try L3." If
+the level judgment was wrong, treat that as a change to the research design:
+fork a new task version or timestamp lineage, record the new eval contract, and
+do not compare scores as if they came from the same experiment.
 
 Write the human-readable trust argument to `knowledge/eval_spec.md`. If the eval meaning changes after attempts exist, start a new timestamp or re-run selected attempts under one frozen eval before comparing scores.
 
@@ -211,7 +241,9 @@ Start CORAL only after:
 
 During a run, let the user observe progress, pause/resume the whole run, and optionally send a next-resume instruction. If the user gives feedback while paused or stopped, save run-level steering to `.coral/public/control/next_instruction.md`. For targeted per-agent critique, reset that agent's notebook with `coral kb notebook --agent <agent-id> --set <file> --reason external-adjustment --by codex`. Add or archive external knowledge only through `coral kb add external ...` and `coral kb remove <src-id>`. Do not silently rewrite eval semantics, hidden data, or agent initialization bundles after attempts exist.
 
-Once a timestamp has activity, lock executor/runtime backend, grader direction, eval version, and route topology. Keep model, eval profile, resource budget, deadline, and next-resume instruction editable when safe.
+Once a timestamp has activity, lock evaluation level, executor/runtime backend,
+grader direction, eval version, and route topology. Keep model, eval profile,
+resource budget, deadline, and next-resume instruction editable when safe.
 
 ### 8. Review, Promote, or Fork
 
