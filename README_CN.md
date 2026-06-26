@@ -82,18 +82,24 @@ curl -fsSL https://raw.githubusercontent.com/PullMyBoots/DiscoveryConsole/main/i
 coral --help
 ```
 
-### 2. 安装 Codex skill
+### 2. 将 Codex skill 软链接到项目
 
-克隆仓库，然后把 skill 复制到 Codex skills 目录：
+克隆仓库，然后把配套 skill 暴露给你要运行 Codex 的项目。推荐做法是保留仓库里的源 skill，在项目目录的 `.agents/skills/` 下创建软链接：
 
 ```bash
 git clone https://github.com/PullMyBoots/DiscoveryConsole.git
 cd DiscoveryConsole
-mkdir -p "$HOME/.codex/skills"
-cp -a codex-skill/coral-research-workbench "$HOME/.codex/skills/"
+DISCOVERYCONSOLE_DIR="$PWD"
+
+cd /path/to/your/research-project
+mkdir -p .agents/skills
+ln -sfn "$DISCOVERYCONSOLE_DIR/codex-skill/coral-research-workbench" \
+  .agents/skills/coral-research-workbench
 ```
 
-重新打开一个 Codex session，让 Codex 使用 `coral-research-workbench` skill 来准备 DiscoveryConsole/CORAL workspace。
+这个项目级软链接很重要：Codex 在该研究项目中工作时，应当能看到准确版本的 `coral-research-workbench` skill。你也可以额外把同一个 skill 软链接到 `$HOME/.agents/skills/` 做全局复用，但推荐安装步骤必须包含项目目录下的 `.agents/skills/` 软链接。
+
+从该研究项目重新打开一个 Codex session，让 Codex 使用 `coral-research-workbench` skill 来准备 DiscoveryConsole/CORAL workspace。
 
 ### 3. 创建或准备任务
 

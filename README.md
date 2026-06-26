@@ -82,18 +82,31 @@ The CLI command is still `coral` because DiscoveryConsole currently ships as a C
 coral --help
 ```
 
-### 2. Install the Codex skill
+### 2. Link the Codex skill into your project
 
-Clone this repository, then copy the skill into your Codex skills directory:
+Clone this repository, then expose the bundled skill to the project where you
+will run Codex. Keep the skill in this repository and link it into the
+project-local `.agents/skills/` directory:
 
 ```bash
 git clone https://github.com/PullMyBoots/DiscoveryConsole.git
 cd DiscoveryConsole
-mkdir -p "$HOME/.codex/skills"
-cp -a codex-skill/coral-research-workbench "$HOME/.codex/skills/"
+DISCOVERYCONSOLE_DIR="$PWD"
+
+cd /path/to/your/research-project
+mkdir -p .agents/skills
+ln -sfn "$DISCOVERYCONSOLE_DIR/codex-skill/coral-research-workbench" \
+  .agents/skills/coral-research-workbench
 ```
 
-Start a new Codex session and ask it to use the `coral-research-workbench` skill to prepare a DiscoveryConsole/CORAL workspace.
+This project-local link is important: Codex should see the exact
+`coral-research-workbench` skill when it is working inside that research
+project. You may also link the same skill into `$HOME/.agents/skills/` for
+global reuse, but the project-local `.agents/skills/` link is the recommended
+installation step.
+
+Start a new Codex session from the research project and ask it to use the
+`coral-research-workbench` skill to prepare a DiscoveryConsole/CORAL workspace.
 
 ### 3. Create or prepare a task
 

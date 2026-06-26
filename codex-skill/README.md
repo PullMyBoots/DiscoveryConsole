@@ -10,20 +10,26 @@ layer.
 
 ## Install Locally
 
-From the CORAL repository root:
+Link the skill into each research project where Codex will use it:
 
 ```bash
-mkdir -p "$HOME/.codex/skills"
-cp -a codex-skill/coral-research-workbench "$HOME/.codex/skills/"
+DISCOVERYCONSOLE_DIR=/path/to/DiscoveryConsole
+
+cd /path/to/your/research-project
+mkdir -p .agents/skills
+ln -sfn "$DISCOVERYCONSOLE_DIR/codex-skill/coral-research-workbench" \
+  .agents/skills/coral-research-workbench
 ```
 
-Then start a new Codex session and ask it to use the `coral-research-workbench`
-skill.
+Then start a new Codex session from that research project and ask it to use the
+`coral-research-workbench` skill. You may also link the same skill into
+`$HOME/.agents/skills/` for global reuse, but the project-local `.agents/skills/`
+link is the recommended installation step.
 
 To check whether the execution engine is available:
 
 ```bash
-python "$HOME/.codex/skills/coral-research-workbench/scripts/check_coral_install.py" --json
+python ".agents/skills/coral-research-workbench/scripts/check_coral_install.py" --json
 ```
 
 ## What The Skill Provides
@@ -40,11 +46,11 @@ python "$HOME/.codex/skills/coral-research-workbench/scripts/check_coral_install
 
 ## Syncing During Development
 
-If you edit the installed skill first, mirror it back into the repository before
-publishing:
+If you edit a linked or installed skill first, mirror it back into the
+repository before publishing:
 
 ```bash
 rsync -a --delete --exclude '__pycache__/' \
-  "$HOME/.codex/skills/coral-research-workbench/" \
+  "$HOME/.agents/skills/coral-research-workbench/" \
   codex-skill/coral-research-workbench/
 ```
